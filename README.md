@@ -4,7 +4,7 @@
 
 Puros is a small team building a music player for people who care about sound, focus, and owning their library. It brings local playback and streaming together in one focused desktop app: see exactly what format is playing, control how your output device is driven, and keep a clean library without the clutter of a general-purpose streaming client.
 
-Website: [getpuros.app](https://getpuros.app)
+Website: [getpuros.app](https://getpuros.app) · Discord: [join the community](https://discord.gg/AauwQm2fKe)
 
 ## Download
 
@@ -43,6 +43,8 @@ Streaming services connect through **providers**: separate packages you install 
 Unofficial providers (SoundCloud, Spotify, TIDAL, YouTube Music and more) are listed in **[purosapp/providers-list](https://github.com/purosapp/providers-list)**. They are third-party software, not part of Puros, and Puros is not responsible for them.
 
 Want to build one? Start with the **[Provider SDK](https://github.com/purosapp/puros-provider-sdk)**.
+
+Questions, feedback or bug reports: come talk to us on [Discord](https://discord.gg/AauwQm2fKe).
 
 ## Requirements
 
