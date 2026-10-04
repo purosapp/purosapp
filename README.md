@@ -6,11 +6,16 @@ Puros is a small team building a music player for people who care about sound, f
 
 Website: [getpuros.app](https://getpuros.app) · Discord: [join the community](https://discord.gg/AauwQm2fKe)
 
+![Puros home screen with recently played playlists and a FLAC 24-bit/48 kHz track playing](screenshots/home.png)
+
 ## Download
 
 Compiled versions of Puros are published by hand on the [Releases](https://github.com/purosapp/purosapp/releases) page of this repository.
 
-**[⬇ Download the latest version](https://github.com/purosapp/purosapp/releases/latest)**
+**[⬇ Download Puros](https://github.com/purosapp/purosapp/releases)**: the newest version is at the top.
+
+> [!NOTE]
+> Puros is in **alpha**. Expect rough edges and missing features, and keep a backup of anything important. Builds are for Apple Silicon Macs, signed with a Developer ID and notarized by Apple.
 
 Download the `.dmg`, open it and drag Puros to Applications.
 
@@ -27,7 +32,8 @@ Download the `.dmg`, open it and drag Puros to Applications.
 
 - Local file scanning with full metadata indexing, and M3U playlists
 - Queue, shuffle and now-playing controls
-- Artist and album pages
+- Artist and album pages, genres, pins and listening history
+- Live radio: browse Radio Browser stations or add your own streams
 
 **Sound and extras**
 
@@ -48,7 +54,7 @@ Questions, feedback or bug reports: come talk to us on [Discord](https://discord
 
 ## Requirements
 
-- macOS
+- A Mac with Apple Silicon
 - A CoreAudio-compatible output device
 - An account for any streaming service you connect (optional)
 
