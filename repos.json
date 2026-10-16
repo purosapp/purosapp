@@ -1,0 +1,8 @@
+{
+  "provider-sdk": "https://github.com/purosapp/puros-provider-sdk.git",
+  "providers-list": "https://github.com/purosapp/providers-list.git",
+  "providers/soundcloud": "https://github.com/jacobbvfx/puros-provider-soundcloud.git",
+  "providers/spotify": "https://github.com/jacobbvfx/puros-provider-spotify.git",
+  "providers/tidal": "https://github.com/jacobbvfx/puros-provider-tidal.git",
+  "providers/youtube-music": "https://github.com/jacobbvfx/puros-provider-youtube-music.git"
+}

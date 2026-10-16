@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "apiVersion": 1,
+  "id": "example",
+  "version": "1.0.0",
+  "displayName": "Example Provider",
+  "description": "Deterministic offline provider used by the Puros contract suite.",
+  "icon": "assets/icon.svg",
+  "brandColor": "#7357FF",
+  "defaultPriority": 900,
+  "capabilities": [
+    "auth",
+    "catalog.search",
+    "catalog.entities",
+    "catalog.home",
+    "library.sync",
+    "playlists",
+    "playback.resolve",
+    "playback.prefetch",
+    "quality.tiers",
+    "metadata.artwork",
+    "metadata.bio",
+    "metadata.credits"
+  ],
+  "settings": [
+    {
+      "id": "enabled",
+      "label": "Enable example data",
+      "description": "Fixture-only setting used to exercise host-rendered controls.",
+      "type": "toggle",
+      "key": "enabled",
+      "storage": "setting",
+      "defaultValue": true
+    },
+    {
+      "id": "fixture-status",
+      "label": "Fixture status",
+      "type": "status",
+      "statusKey": "fixture"
+    }
+  ],
+  "build": {
+    "extraResources": [
+      {
+        "from": "assets",
+        "to": "providers/example/assets",
+        "filter": ["icon.svg", "example.wav"]
+      }
+    ]
+  }
+}

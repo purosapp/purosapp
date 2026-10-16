@@ -1,0 +1,56 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+release
+dist-electron
+native/build
+*.tsbuildinfo
+build/*-bridge/
+build/*-bridge-work/
+build/*.spec
+build/config.gypi
+electron/main/providers/generated.ts
+electron/generated-provider-runtime.ts
+build/providers.generated.json
+build/audio/
+providers/*/helper/work/
+providers/*/helper/target/
+providers/*/helper/__pycache__/
+.env
+.env.local
+.env.*.local
+.npm-cache
+!.env.example
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+*.p8
+
+# Separate repositories cloned in place; see repos.json and `npm run repos:clone`.
+# repos.local.json lists extra private checkouts of your own.
+repos.local.json
+/provider-sdk/
+/providers-list/
+/providers/*
+!/providers/_example/
+
+.claude/settings.local.json

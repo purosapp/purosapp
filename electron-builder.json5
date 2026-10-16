@@ -1,0 +1,41 @@
+// @see - https://www.electron.build/configuration/configuration
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "com.puros.app",
+  "asar": true,
+  "productName": "Puros",
+  "directories": {
+    "output": "release/${version}"
+  },
+  "files": [
+    "dist",
+    "dist-electron"
+  ],
+  "mac": {
+    "target": [
+      "dmg"
+    ],
+    "icon": "puros.icon",
+    "binaries": [
+      "Contents/Resources/native/puros_audio.node",
+      "Contents/Resources/native/libsoxr.0.dylib"
+    ],
+    "category": "public.app-category.music",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "entitlements": "build/entitlements.mac.plist",
+    "entitlementsInherit": "build/entitlements.mac.plist",
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false
+  },
+  "dmg": {
+    "title": "${productName} ${version}"
+  },
+  "extraResources": [
+    {
+      "from": "native/build/Release",
+      "to": "native",
+      // libsoxr (LGPL-2.1) is loaded by the addon via @loader_path.
+      "filter": ["*.node", "libsoxr.0.dylib", "SOXR-COPYING.LGPL"]
+    }
+  ]
+}
