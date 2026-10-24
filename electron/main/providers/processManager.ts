@@ -220,6 +220,7 @@ export class ProviderProcessManager implements ProviderRuntimeV1 {
       console.warn(`[Puros][Provider:${this.manifest.id}] host cleanup failed:`, cleanupError)
     })
     if (this.stopping) return
+    console.warn(`[Puros][Provider:${this.manifest.id}] provider process failed; restarting:`, error)
     this.registry.markError(this.manifest.id, processFailure(error))
     this.scheduleRestart()
   }

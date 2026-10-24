@@ -135,3 +135,25 @@ export function listProviderTracksNeedingFormat(
   `).all(providerId, providerId, boundedLimit) as Array<{ source_id: string | null }>
   return rows.flatMap(({ source_id }) => source_id ? [source_id] : [])
 }
+
+/**
+ * Records what playback found out about a provider track: a reason greys it
+ * out and keeps it out of queues, null clears an earlier mark after it played.
+ * Returns whether anything changed, so callers notify views only then.
+ */
+export function setProviderTrackUnavailableReason(
+  db: Database.Database,
+  providerId: string,
+  sourceId: string,
+  reason: string | null,
+): boolean {
+  const tracks = db.prepare(`
+    UPDATE tracks SET unavailable_reason = ?
+    WHERE source = ? AND source_id = ? AND unavailable_reason IS NOT ?
+  `).run(reason, providerId, sourceId, reason)
+  const sources = db.prepare(`
+    UPDATE catalog_track_sources SET unavailable_reason = ?
+    WHERE provider = ? AND source_id = ? AND unavailable_reason IS NOT ?
+  `).run(reason, providerId, sourceId, reason)
+  return tracks.changes + sources.changes > 0
+}

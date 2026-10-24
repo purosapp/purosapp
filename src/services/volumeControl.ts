@@ -108,6 +108,25 @@ export function hardwareVolumeToUserVolume(hardware: Pick<HardwareVolumeState, '
   return Math.max(0, Math.min(1, hardware.scalar))
 }
 
+/**
+ * Level the slider currently applies, in dB: the DAC's own reading for device
+ * volume (null when it reports none), the slider's gain curve for system and
+ * DSP volume, and unity for fixed volume.
+ */
+export function volumeDecibels(volumeControl: VolumeControlState, volume: number): number | null {
+  switch (volumeControl.effective) {
+    case 'fixed':
+      return 0
+    case 'device': {
+      const hardware = volumeControl.hardware
+      if (hardware?.muted) return Number.NEGATIVE_INFINITY
+      return hardware?.decibels ?? null
+    }
+    default:
+      return gainToDecibels(userVolumeToGain(volume))
+  }
+}
+
 /** Tooltip text for the transport volume control. */
 export function describeVolumeControl(volumeControl: VolumeControlState, volume: number): string | null {
   switch (volumeControl.effective) {

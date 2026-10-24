@@ -15,7 +15,7 @@ import {
   getDb,
   removeSqliteDatabaseWithWal,
 } from './db'
-import { removePathIfExists } from './streamingCache'
+import { clearStreamingAudioCacheExceptDownloads, removePathIfExists } from './streamingCache'
 
 type MaintenanceCallback = () => void | Promise<void>
 
@@ -52,8 +52,7 @@ export function clearAppCaches() {
 
   removePathIfExists(artCacheDir())
   removePathIfExists(getAutoEQCachePath())
-  getDb().prepare(`DELETE FROM streaming_audio_cache`).run()
-  removePathIfExists(path.join(app.getPath('userData'), 'cache', 'streaming-audio'))
+  clearStreamingAudioCacheExceptDownloads()
 }
 
 async function clearDefaultAppSessionData() {

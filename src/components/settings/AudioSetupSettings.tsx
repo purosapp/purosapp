@@ -23,6 +23,7 @@ import {
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { AudioDevice } from '../../../electron/preload'
 import { audioService } from '../../services/AudioService'
 import {
@@ -60,7 +61,10 @@ import {
   type ResamplingSettings,
 } from '../../services/resamplingSettings'
 import ResamplingSettingsPanel from './ResamplingSettingsPanel'
+import { GlassPanel, SOLID_GLASS_TINT } from '../GlassPanel'
 import { Segmented, Select, SettingRow, Switch } from './controls'
+import { Button, FIELD_CLASS } from '../ui'
+import { isWindowHidden } from '../../services/windowActivity'
 
 const DEVICE_POLL_INTERVAL_MS = 3000
 
@@ -189,21 +193,24 @@ function DeviceSetupDialog({ device, onClose }: { device: AudioDevice; onClose: 
 
   const exclusiveValue: ExclusivePreference = draft.exclusive ?? 'remember'
 
-  return (
+  // At the document root: the settings modal's glass would otherwise contain and clip it.
+  return createPortal(
     <div
       className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50"
       onClick={(event) => { if (event.target === event.currentTarget) onClose() }}
     >
-      <div
+      <GlassPanel
         role="dialog"
         aria-modal="true"
         aria-label={`Device Setup: ${deviceDisplayName(setup, device)}`}
-        className="bg-zinc-900 border border-white/10 rounded-2xl shadow-2xl w-[min(620px,92vw)] max-h-[82vh] flex flex-col overflow-hidden"
+        radius={16}
+        tint={SOLID_GLASS_TINT}
+        className="relative border border-transparent w-[min(620px,92vw)] max-h-[82vh] flex flex-col overflow-hidden"
       >
         {/* Header */}
         <div className="flex items-start justify-between gap-4 px-6 py-4 border-b border-white/10 shrink-0">
           <div className="flex items-start gap-3 min-w-0">
-            <div className="mt-0.5 p-2 rounded-lg bg-white/5 text-zinc-300">
+            <div className="mt-0.5 p-2 rounded-xl bg-white/5 text-zinc-300">
               <GroupIcon group={deviceGroupForTransport(device.transportType)} />
             </div>
             <div className="min-w-0">
@@ -214,30 +221,28 @@ function DeviceSetupDialog({ device, onClose }: { device: AudioDevice; onClose: 
               </p>
             </div>
           </div>
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={X}
+            iconOnly
+            label="Close Device Setup"
             onClick={onClose}
             aria-label="Close Device Setup"
-            className="p-1.5 rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-white/5 transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          />
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-1 px-6 pt-3 border-b border-white/10 shrink-0">
-          {(['general', 'advanced', 'resampling'] as const).map((id) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setTab(id)}
-              className={`px-3 py-2 text-sm -mb-px border-b-2 transition-colors ${
-                tab === id ? 'border-blue-500 text-zinc-100' : 'border-transparent text-zinc-500 hover:text-zinc-300'
-              }`}
-            >
-              {id === 'general' ? 'General' : id === 'advanced' ? 'Advanced' : 'Resampling'}
-            </button>
-          ))}
+        <div className="px-6 pt-4 pb-1 shrink-0">
+          <Segmented
+            value={tab}
+            onChange={setTab}
+            options={[
+              { id: 'general', label: 'General' },
+              { id: 'advanced', label: 'Advanced' },
+              { id: 'resampling', label: 'Resampling' },
+            ]}
+          />
         </div>
 
         {/* Body */}
@@ -284,7 +289,7 @@ function DeviceSetupDialog({ device, onClose }: { device: AudioDevice; onClose: 
                   placeholder={device.name}
                   maxLength={80}
                   onChange={(event) => update({ displayName: event.target.value })}
-                  className="w-full bg-zinc-800 border border-white/10 rounded-md px-3 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
+                  className={`${FIELD_CLASS} w-full`}
                 />
               </SettingRow>
 
@@ -474,34 +479,22 @@ function DeviceSetupDialog({ device, onClose }: { device: AudioDevice; onClose: 
 
         {/* Footer */}
         <div className="flex items-center justify-between gap-3 px-6 py-3 border-t border-white/10 shrink-0">
-          <button
-            type="button"
-            onClick={restoreDefaults}
-            className="px-3 py-1.5 text-xs rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-white/5 transition-colors"
-          >
-            Restore Defaults
-          </button>
+          <Button variant="ghost" size="sm" label="Restore Defaults" onClick={restoreDefaults} />
           <div className="flex items-center gap-2">
             {error && <p className="text-xs text-red-400">{error}</p>}
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-3 py-1.5 text-xs rounded-md text-zinc-300 hover:bg-white/5 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
+            <Button variant="ghost" size="sm" label="Cancel" onClick={onClose} />
+            <Button
+              variant="primary"
+              size="sm"
+              label={saving ? 'Saving…' : 'Save Settings'}
               onClick={() => { void save() }}
               disabled={saving}
-              className="px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50 transition-colors"
-            >
-              {saving ? 'Saving…' : 'Save Settings'}
-            </button>
+            />
           </div>
         </div>
-      </div>
-    </div>
+      </GlassPanel>
+    </div>,
+    document.body,
   )
 }
 
@@ -527,7 +520,7 @@ function DeviceRow({
   const configured = Object.keys(editableDeviceConfig(config)).some((key) => key !== 'enabled')
 
   return (
-    <div className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${enabled ? 'hover:bg-white/[0.03]' : 'opacity-60'}`}>
+    <div className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors ${enabled ? 'hover:bg-white/[0.03]' : 'opacity-60'}`}>
       <div className={`p-1.5 rounded-md ${enabled ? 'bg-white/5 text-zinc-300' : 'bg-white/[0.02] text-zinc-600'}`}>
         <GroupIcon group={deviceGroupForTransport(device.transportType)} className="w-4 h-4" />
       </div>
@@ -540,7 +533,7 @@ function DeviceRow({
             </span>
           )}
           {configured && (
-            <span className="px-1.5 py-0.5 text-[9px] font-semibold uppercase rounded-full bg-zinc-800 text-zinc-400 shrink-0">
+            <span className="px-1.5 py-0.5 text-[9px] font-semibold uppercase rounded-full bg-white/5 text-zinc-400 shrink-0">
               Custom
             </span>
           )}
@@ -552,15 +545,16 @@ function DeviceRow({
           {device.hardwareVolume ? ' · HW volume' : ''}
         </p>
       </div>
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="sm"
+        icon={Settings2}
+        iconOnly
+        label="Device Setup"
         onClick={() => onConfigure(device)}
-        className="p-1.5 rounded-md text-zinc-500 hover:text-zinc-100 hover:bg-white/5 transition-colors"
         title="Device Setup"
         aria-label={`Configure ${displayName}`}
-      >
-        <Settings2 className="w-4 h-4" />
-      </button>
+      />
       <Switch
         label={`${enabled ? 'Disable' : 'Enable'} ${displayName}`}
         checked={enabled}
@@ -613,29 +607,22 @@ function GlobalResamplingSection() {
     <section className="pt-2">
       <div className="flex items-start justify-between gap-4 mb-3">
         <div>
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1">Resampling &amp; DSD</h3>
+          <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1">Resampling &amp; DSD</h3>
           <p className="text-xs text-zinc-600 max-w-lg">
             Global settings for every output; any device can override them in Device Setup → Resampling.
             Changes apply from the next track{currentTrack ? ', or apply them now' : ''}.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <button
-            type="button"
-            onClick={() => change({ ...DEFAULT_RESAMPLING })}
-            className="px-2.5 py-1 text-xs rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-white/5 transition-colors"
-          >
-            Restore Defaults
-          </button>
+          <Button variant="ghost" size="xs" label="Restore Defaults" onClick={() => change({ ...DEFAULT_RESAMPLING })} />
           {currentTrack && (
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="xs"
+              label={applying ? 'Applying…' : 'Apply now'}
               disabled={applying || !dirtySinceApply}
               onClick={() => { void applyNow() }}
-              className="px-2.5 py-1 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40 transition-colors"
-            >
-              {applying ? 'Applying…' : 'Apply now'}
-            </button>
+            />
           )}
         </div>
       </div>
@@ -672,6 +659,7 @@ export default function AudioSetupSettings() {
     void useAudioSetupStore.getState().ensureLoaded()
     void refresh()
     const id = window.setInterval(() => {
+      if (isWindowHidden()) return
       void window.puros.audio.listDevices().then(setDevices).catch(() => undefined)
     }, DEVICE_POLL_INTERVAL_MS)
     return () => window.clearInterval(id)
@@ -699,24 +687,24 @@ export default function AudioSetupSettings() {
       <div>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1">Audio Setup</h3>
+            <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1">Audio Setup</h3>
             <p className="text-xs text-zinc-600 max-w-lg">
               Choose which outputs Puros may use and configure each one. Disabled outputs are hidden from the output
               menu. Open <span className="text-zinc-400">Device Setup</span> for exclusive mode, volume control, DSD and
               resolution limits.
             </p>
           </div>
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="xs"
+            icon={RefreshCw}
+            label="Refresh"
             onClick={() => { void refresh() }}
-            className="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors"
-          >
-            <RefreshCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
-            Refresh
-          </button>
+            className={`shrink-0 ${refreshing ? '[&_svg]:animate-spin' : ''}`}
+          />
         </div>
 
-        <label className="mt-4 flex items-center justify-between gap-4 rounded-lg border border-white/10 bg-zinc-800/40 px-4 py-3 cursor-pointer">
+        <label className="mt-4 flex items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 cursor-pointer">
           <span>
             <span className="block text-sm text-zinc-200">Enable new devices automatically</span>
             <span className="block text-xs text-zinc-500 mt-0.5">
@@ -735,8 +723,8 @@ export default function AudioSetupSettings() {
       {/* System default */}
       {systemDefault && (
         <section>
-          <h4 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-1 px-3">System</h4>
-          <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg">
+          <h4 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1 px-3">System</h4>
+          <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl">
             <div className="p-1.5 rounded-md bg-white/5 text-zinc-300">
               <Volume2 className="w-4 h-4" />
             </div>
@@ -770,7 +758,7 @@ export default function AudioSetupSettings() {
           </p>
           {groups.map((group) => (
             <section key={group.id}>
-              <h4 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-1 px-3">
+              <h4 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1 px-3">
                 {group.label}
               </h4>
               <div className="space-y-0.5">
@@ -785,13 +773,13 @@ export default function AudioSetupSettings() {
 
       {disconnected.length > 0 && (
         <section>
-          <h4 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-1 px-3">Not connected</h4>
+          <h4 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1 px-3">Not connected</h4>
           <div className="space-y-0.5">
             {disconnected.map(({ uid, config }) => {
               const name = config.displayName || config.lastSeenName || uid
               const enabled = isDeviceEnabled(setup, uid)
               return (
-                <div key={uid} className="flex items-center gap-3 px-3 py-2.5 rounded-lg opacity-70">
+                <div key={uid} className="flex items-center gap-3 px-3 py-2.5 rounded-xl opacity-70">
                   <div className="p-1.5 rounded-md bg-white/[0.02] text-zinc-500">
                     <GroupIcon group={deviceGroupForTransport(config.lastSeenTransport)} className="w-4 h-4" />
                   </div>
@@ -801,14 +789,13 @@ export default function AudioSetupSettings() {
                       {transportDisplayName(config.lastSeenTransport)} · {formatLastSeen(config.lastSeenAt)}
                     </p>
                   </div>
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    label="Forget"
                     onClick={() => { void forgetDevice(uid) }}
-                    className="px-2 py-1 text-[11px] rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-white/5 transition-colors"
                     title="Remove this device's settings"
-                  >
-                    Forget
-                  </button>
+                  />
                   <Switch
                     label={`${enabled ? 'Disable' : 'Enable'} ${name}`}
                     checked={enabled}

@@ -56,6 +56,25 @@ describe('host-managed provider library sync', () => {
     } finally { test.db.close() }
   })
 
+  it('skips a provider synced recently when asked, and syncs it once the checkpoint is old', async () => {
+    const test = fixture([{ records: [track], nextCursor: null, complete: true, checkpoint: 1 }])
+    try {
+      test.db.prepare(`INSERT INTO provider_kv (provider, key, value, updated_at) VALUES ('service-a', 'lastSyncAt', '1', strftime('%s', 'now'))`).run()
+      expect(await test.coordinator.syncReadyManagedProviders({ skipSyncedWithinMs: 60 * 60_000 })).toBe(0)
+      expect(test.invoke).not.toHaveBeenCalled()
+      test.db.prepare(`UPDATE provider_kv SET updated_at = strftime('%s', 'now') - 7200 WHERE provider = 'service-a'`).run()
+      expect(await test.coordinator.syncReadyManagedProviders({ skipSyncedWithinMs: 60 * 60_000 })).toBe(1)
+      expect(test.invoke).toHaveBeenCalledOnce()
+    } finally { test.db.close() }
+  })
+
+  it('reports a failed provider sync after trying the rest', async () => {
+    const test = fixture([{ error: 'offline' }])
+    try {
+      await expect(test.coordinator.syncReadyManagedProviders()).rejects.toThrow('service-a: offline')
+    } finally { test.db.close() }
+  })
+
   it('asks for a full resync on the first page only when the sync was requested as one', async () => {
     const test = fixture([
       { records: [artist], nextCursor: 'next', complete: false },

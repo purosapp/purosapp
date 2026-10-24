@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3'
 import { describe, expect, it } from 'vitest'
-import type { ProviderLibraryRecordV1 } from '../../../src/provider-api/v1'
+import type { ProviderLibraryRecordV1, ProviderTrackV1 } from '../../../src/provider-api/v1'
 import { initSchema } from '../db/schema'
 import { applyProviderLibraryUrls, mirrorProviderLibrary, providerLibraryRowId } from './libraryMirror'
 
@@ -20,6 +20,32 @@ const records: ProviderLibraryRecordV1[] = [
 ]
 
 describe('core-owned provider library mirror', () => {
+  it('stores what each snapshot says about track availability', async () => {
+    const db = new Database(':memory:')
+    try {
+      initSchema(db, () => {})
+      const snapshot = (tracks: Array<Pick<ProviderTrackV1, 'sourceId' | 'playable' | 'unavailableReason'>>): ProviderLibraryRecordV1[] =>
+        tracks.map((value) => ({ type: 'track', value: { title: 'T', durationMs: 1, ...value } }))
+      const reasons = () => Object.fromEntries((db.prepare(`SELECT source_id, unavailable_reason FROM tracks WHERE source = ? ORDER BY source_id`).all(provider) as Array<{ source_id: string; unavailable_reason: string | null }>).map((row) => [row.source_id, row.unavailable_reason]))
+
+      await mirrorProviderLibrary(db, provider, snapshot([
+        { sourceId: 'locked', playable: false, unavailableReason: 'region' },
+        { sourceId: 'gone', playable: false },
+        { sourceId: 'fine', playable: true },
+        { sourceId: 'unknown' },
+      ]), async () => null)
+      expect(reasons()).toEqual({ fine: null, gone: 'other', locked: 'region', unknown: null })
+
+      await mirrorProviderLibrary(db, provider, snapshot([
+        { sourceId: 'locked', playable: true },
+        { sourceId: 'gone', playable: false, unavailableReason: 'removed' },
+      ]), async () => null)
+      expect(reasons()).toMatchObject({ gone: 'removed', locked: null })
+    } finally {
+      db.close()
+    }
+  })
+
   it('copies snapshot provider links onto catalog source rows and ignores non-web values', () => {
     const db = new Database(':memory:')
     try {

@@ -1,4 +1,4 @@
-export type SettingsTab = 'accounts' | 'player' | 'audio' | 'library' | 'visualizer'
+export type SettingsTab = 'accounts' | 'player' | 'downloads' | 'audio' | 'appearance' | 'library' | 'visualizer'
 
 const OPEN_SETTINGS_EVENT = 'puros:open-settings'
 

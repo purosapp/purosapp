@@ -62,9 +62,10 @@ describe('provider data migrations', () => {
     initSchema(db, () => {})
     initSchema(db, () => {})
 
-    expect(db.pragma('user_version', { simple: true })).toBe(32)
+    expect(db.pragma('user_version', { simple: true })).toBe(33)
     expect((db.prepare(`PRAGMA table_info(streaming_audio_cache)`).all() as Array<{ name: string }>).map((column) => column.name)).toContain('source_format')
-    expect((db.prepare(`PRAGMA table_info(tracks)`).all() as Array<{ name: string }>).map((column) => column.name)).toEqual(expect.arrayContaining(['artwork_id', 'art_path']))
+    expect((db.prepare(`PRAGMA table_info(tracks)`).all() as Array<{ name: string }>).map((column) => column.name)).toEqual(expect.arrayContaining(['artwork_id', 'art_path', 'unavailable_reason']))
+    expect((db.prepare(`PRAGMA table_info(catalog_track_sources)`).all() as Array<{ name: string }>).map((column) => column.name)).toContain('unavailable_reason')
     expect((db.prepare(`SELECT count(*) count FROM artists`).get() as { count: number }).count).toBe(countsBefore.artists)
     expect((db.prepare(`SELECT count(*) count FROM albums`).get() as { count: number }).count).toBe(countsBefore.albums)
     expect((db.prepare(`SELECT count(*) count FROM tracks`).get() as { count: number }).count).toBe(countsBefore.tracks)

@@ -132,3 +132,77 @@ export async function sampleArtworkColor(src: string | null): Promise<RgbColor> 
     image.src = src
   })
 }
+
+/**
+ * The cover's single most prominent colour. Pixels go into a coarse RGB
+ * histogram (8 levels per channel) weighted toward saturated mid-tones; the
+ * heaviest bin wins and its pixels are averaged. Unlike sampleArtworkColor this
+ * never blends two dominant colours into a third (red + blue → purple).
+ */
+export async function sampleArtworkKeyColor(src: string | null): Promise<RgbColor> {
+  if (!src) return DEFAULT_ARTWORK_AMBIENT_COLOR
+
+  return new Promise((resolve) => {
+    const image = new Image()
+    image.crossOrigin = 'anonymous'
+    image.decoding = 'async'
+    image.onload = () => {
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = 48
+        canvas.height = 48
+        const context = canvas.getContext('2d')
+        if (!context) {
+          resolve(DEFAULT_ARTWORK_AMBIENT_COLOR)
+          return
+        }
+
+        context.drawImage(image, 0, 0, canvas.width, canvas.height)
+        const { data } = context.getImageData(0, 0, canvas.width, canvas.height)
+
+        const weights = new Float64Array(512)
+        const sums = new Float64Array(512 * 3)
+
+        for (let index = 0; index < data.length; index += 4) {
+          const r = data[index]
+          const g = data[index + 1]
+          const b = data[index + 2]
+          const alpha = data[index + 3] / 255
+          const max = Math.max(r, g, b)
+          const min = Math.min(r, g, b)
+          const saturation = max === 0 ? 0 : (max - min) / max
+          // Near-black and near-white pixels say little about the cover's colour.
+          const tone = max < 28 || min > 232 ? 0.08 : 1
+          const weight = alpha * (0.12 + saturation) * tone
+
+          const bin = ((r >> 5) << 6) | ((g >> 5) << 3) | (b >> 5)
+          weights[bin] += weight
+          sums[bin * 3] += r * weight
+          sums[bin * 3 + 1] += g * weight
+          sums[bin * 3 + 2] += b * weight
+        }
+
+        let best = 0
+        for (let bin = 1; bin < weights.length; bin += 1) {
+          if (weights[bin] > weights[best]) best = bin
+        }
+
+        const total = weights[best]
+        if (total <= 0) {
+          resolve(DEFAULT_ARTWORK_AMBIENT_COLOR)
+          return
+        }
+
+        resolve({
+          r: Math.round(sums[best * 3] / total),
+          g: Math.round(sums[best * 3 + 1] / total),
+          b: Math.round(sums[best * 3 + 2] / total),
+        })
+      } catch {
+        resolve(DEFAULT_ARTWORK_AMBIENT_COLOR)
+      }
+    }
+    image.onerror = () => resolve(DEFAULT_ARTWORK_AMBIENT_COLOR)
+    image.src = src
+  })
+}

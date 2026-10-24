@@ -11,13 +11,15 @@ import { useVisualizerStore } from '../../../store/visualizerStore'
 import { preparePreset } from '../../visualizer/presets'
 import { installReactivityControl } from '../../visualizer/reactivity'
 import { VisualizerAudioWindow, setAnalysisSampleRate } from '../../visualizer/audio'
+import { useWindowActivity } from '../../../services/windowActivity'
 
 // Normalize CJS interop: Vite may leave the module as { default: X } or unwrap it
 const bc: BcStatic = (butterchurnRaw.default ?? butterchurnRaw) as BcStatic
 const bcPresets: BcPresetsStatic = (butterchurnPresetsRaw.default ?? butterchurnPresetsRaw) as BcPresetsStatic
 
 interface VisualizerPanelProps {
-  header: ReactNode
+  /** Shown above the canvas when not fullscreen; omit for none. */
+  header?: ReactNode
   isPlaying: boolean
   ambientColor: { r: number; g: number; b: number }
   vizFullscreen: boolean
@@ -33,6 +35,8 @@ interface BcAudioProcessor {
 }
 
 const BUILTIN_PRESET_MAP = bcPresets.getPresets()
+/** 30 fps while another app has focus. */
+const UNFOCUSED_FRAME_MS = 1000 / 30
 
 
 export default function VisualizerPanel({
@@ -42,6 +46,12 @@ export default function VisualizerPanel({
   active = true,
   standalone,
 }: VisualizerPanelProps) {
+  // Nothing to draw for while the window is out of sight. With another app
+  // focused, the panel drops to 30 fps; a detached window keeps its full rate
+  // because it is usually watched beside other apps.
+  const windowActivity = useWindowActivity()
+  const running = active && windowActivity !== 'hidden'
+  const minFrameMs = windowActivity === 'unfocused' && !standalone ? UNFOCUSED_FRAME_MS : 0
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const vizRef = useRef<BcVisualizer | null>(null)
   const audioProcessorRef = useRef<BcAudioProcessor | null>(null)
@@ -73,7 +83,7 @@ export default function VisualizerPanel({
   useEffect(() => {
     fpsSampleRef.current = { startedAt: performance.now(), frames: 0 }
     setFps(null)
-  }, [showFps, active, isReady])
+  }, [showFps, running, isReady])
 
   // History stack for prev/next random navigation
   const historyRef = useRef<string[]>([selectedPreset])
@@ -205,9 +215,10 @@ export default function VisualizerPanel({
   }, [])
 
   useEffect(() => {
-    if (!active || !isReady) return
+    if (!running || !isReady) return
 
     let cancelled = false
+    let lastRenderAt = 0
 
     const syncFrame = async () => {
       try {
@@ -216,7 +227,7 @@ export default function VisualizerPanel({
         audioWindowRef.current.accept(frame, performance.now())
       } catch { /* engine not ready; the last window expires to silence */ }
       finally {
-        if (!cancelled) pollRef.current = window.setTimeout(() => { void syncFrame() }, 20)
+        if (!cancelled) pollRef.current = window.setTimeout(() => { void syncFrame() }, Math.max(20, minFrameMs))
       }
     }
 
@@ -228,6 +239,14 @@ export default function VisualizerPanel({
       const viz = vizRef.current
       const audio = audioProcessorRef.current
       if (!viz || !audio) return
+
+      const frameStart = performance.now()
+      // A little slack so a 60 Hz display lands on every second frame.
+      if (minFrameMs > 0 && frameStart - lastRenderAt < minFrameMs - 2) {
+        rafRef.current = window.requestAnimationFrame(render)
+        return
+      }
+      lastRenderAt = frameStart
 
       const pcm = audioWindowRef.current
       pcm.expire(performance.now())
@@ -276,14 +295,14 @@ export default function VisualizerPanel({
         rafRef.current = null
       }
     }
-  }, [active, isReady])
+  }, [running, isReady, minFrameMs])
 
   // Auto-advance only while the visualizer is visible and ready.
   useEffect(() => {
-    if (!active || !isReady) return
+    if (!running || !isReady) return
     const id = window.setInterval(() => advancePreset(false), cycleInterval * 1000)
     return () => window.clearInterval(id)
-  }, [active, isReady, cycleInterval, advancePreset])
+  }, [running, isReady, cycleInterval, advancePreset])
 
   // Use the same loading path for initial, manual, automatic and custom presets.
   useEffect(() => {
@@ -377,19 +396,19 @@ export default function VisualizerPanel({
       className={
         vizFullscreen
           ? 'fixed inset-0 z-60 flex flex-col bg-black'
-          : 'relative flex h-full min-h-96 flex-col overflow-hidden rounded-4xl border border-white/8 bg-black/18 shadow-[0_24px_70px_rgba(0,0,0,0.22)] backdrop-blur-2xl'
+          : 'relative flex h-full flex-col overflow-hidden rounded-[30px] bg-black/40 shadow-[0_30px_90px_rgba(0,0,0,0.5)]'
       }
     >
       {/* Header — hidden in fullscreen */}
-      {!vizFullscreen && (
+      {!vizFullscreen && header ? (
         <div className="border-b border-white/8 px-6 py-4">{header}</div>
-      )}
+      ) : null}
 
       {/* Canvas area */}
       <div className="relative flex-1 overflow-hidden">
         <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" style={{ filter: `brightness(${brightness})` }} />
 
-        {showFps && active && (
+        {showFps && running && (
           <span
             className="pointer-events-none absolute right-4 top-4 select-none rounded-md bg-black/65 px-2 py-1 font-mono text-xs tabular-nums text-white/85"
             aria-label="Visualizer frames per second"

@@ -1,6 +1,5 @@
 import { app } from 'electron'
 import { execFile } from 'node:child_process'
-import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -35,11 +34,6 @@ let parsePlaybackTrackFile: (
   mm: typeof import('music-metadata'),
 ) => Promise<ParsedPlaybackTrack>
 
-const localDsdPreparationTasks = new Map<string, Promise<{
-  playbackPath: string
-  outputFormat: LocalPreparedFormatInfo
-}>>()
-
 export function configureLocalPlayback(deps: {
   parseTrackFile: typeof parsePlaybackTrackFile
 }) {
@@ -54,23 +48,24 @@ function isLikelyDsdFile(filePath: string, sourceFormat?: { isDsd?: boolean } | 
   return ext === '.dsf' || ext === '.dff'
 }
 
-export function getLocalDsdCacheDir(): string {
-  const dir = path.join(app.getPath('userData'), 'cache', 'dsd-pcm')
-  fs.mkdirSync(dir, { recursive: true })
-  return dir
+/** Where earlier versions cached DSD files converted to WAV by ffmpeg. */
+export function removeLegacyDsdCache(): Promise<void> {
+  return fs.promises.rm(path.join(app.getPath('userData'), 'cache', 'dsd-pcm'), { recursive: true, force: true })
 }
 
+/** DSD → PCM in the audio engine (its DsdDecimator), applied while the file plays. */
 export interface DsdConversionOptions {
+  /** PCM rate the DSD stream is decimated to (dsdRate / 2^k); the engine resamples from there. */
   sampleRate: number
   /** Ultrasonic low-pass cutoff (Hz); 0 = off. */
   filterHz: number
   gainDb: number
-  /** SoX resampler precision in bits. */
-  precision: number
 }
 
-const DEFAULT_DSD_CONVERSION: DsdConversionOptions = { sampleRate: 176_400, filterHz: 0, gainDb: 0, precision: 28 }
+const DEFAULT_DSD_CONVERSION: DsdConversionOptions = { sampleRate: 176_400, filterHz: 0, gainDb: 0 }
 const DSD_PCM_RATES = new Set([44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000])
+/** DSD rate assumed when the source's is unknown: its 44.1 kHz multiples cover every request. */
+const FALLBACK_DSD_RATE = 22_579_200
 
 /** Validate renderer-supplied options; anything unusable falls back to the defaults. */
 export function sanitizeDsdConversionOptions(raw: unknown): DsdConversionOptions {
@@ -82,29 +77,50 @@ export function sanitizeDsdConversionOptions(raw: unknown): DsdConversionOptions
     ? Math.round(input.filterHz)
     : 0
   const gainDb = input.gainDb === 3 || input.gainDb === 6 ? input.gainDb : 0
-  const precision = typeof input.precision === 'number' && input.precision >= 16 && input.precision <= 32
-    ? Math.round(input.precision)
-    : DEFAULT_DSD_CONVERSION.precision
-  return { sampleRate, filterHz, gainDb, precision }
+  return { sampleRate, filterHz, gainDb }
 }
 
-/** ffmpeg audio filter chain: SoX resampling, optional ultrasonic filter, level compensation. */
-export function buildDsdFilterChain(options: DsdConversionOptions, useSoxr = true): string {
-  const filters = [
-    useSoxr
-      ? `aresample=osr=${options.sampleRate}:resampler=soxr:precision=${options.precision}`
-      : `aresample=osr=${options.sampleRate}`,
-  ]
-  // asupercut is a high-order Butterworth low-pass for the DSD noise shelf.
-  if (useSoxr && options.filterHz > 0) filters.push(`asupercut=cutoff=${options.filterHz}:order=10`)
-  if (options.gainDb > 0) filters.push(`volume=${options.gainDb}dB`)
-  return filters.join(',')
+/**
+ * PCM rate a DSD stream decodes to for a requested rate: dsdRate / 2^k (k ≥ 3), the
+ * lowest at or above the request, at most dsdRate / 8. Mirrors DsdDecimator::decodeRate.
+ */
+export function dsdDecodeRate(dsdRate: number, requested: number): number {
+  if (!Number.isInteger(dsdRate) || dsdRate <= 0 || dsdRate % 8 !== 0) return 0
+  let rate = dsdRate / 8
+  while (rate % 2 === 0 && rate / 2 >= requested) rate /= 2
+  return rate
+}
+
+const DSD_PCM_TARGET = /#dsd-pcm=(\d+),(\d+),(\d+)$/
+
+/**
+ * The playback target for a DSD file heard as PCM: the file plus its conversion
+ * settings. It is never written; playFile() hands both to the engine.
+ */
+export function toDsdPcmTarget(filePath: string, options: DsdConversionOptions): string {
+  return `${filePath}#dsd-pcm=${options.sampleRate},${options.filterHz},${options.gainDb}`
+}
+
+export function resolveDsdPcmTarget(target: string): { sourcePath: string; options: DsdConversionOptions } | null {
+  const match = DSD_PCM_TARGET.exec(target)
+  if (!match) return null
+  const sampleRate = Number(match[1])
+  return {
+    sourcePath: target.slice(0, match.index),
+    options: {
+      sampleRate,
+      // Already validated when the target was made; only bounds-checked here.
+      filterHz: Math.min(Number(match[2]), sampleRate / 2),
+      gainDb: Math.min(Number(match[3]), 6),
+    },
+  }
 }
 
 export async function prepareLocalPlaybackFile(
   filePath: string,
   sourceFormat?: {
     sampleRate?: number
+    dsdRate?: number
     channels?: number
     isDsd?: boolean
   } | null,
@@ -114,22 +130,11 @@ export async function prepareLocalPlaybackFile(
     return { playbackPath: filePath, outputFormat: null }
   }
 
-  const stat = fs.statSync(filePath)
-  const cacheKey = createHash('sha256')
-    .update(filePath)
-    .update('\x00')
-    .update(String(Math.floor(stat.mtimeMs)))
-    .update('\x00')
-    .update(String(stat.size))
-    .update('\x00')
-    // Each conversion setting yields its own cached PCM file.
-    .update(JSON.stringify(dsdOptions))
-    .digest('hex')
-  const existingTask = localDsdPreparationTasks.get(cacheKey)
-  if (existingTask) return existingTask
-
-  const targetChannels = Math.max(1, Math.min(2, sourceFormat?.channels ?? 2))
-  const targetSampleRate = dsdOptions.sampleRate
+  // The engine decodes stereo; what it reads is 32-bit float PCM at the decimator's rate.
+  const sourceDsdRate = sourceFormat?.dsdRate ?? sourceFormat?.sampleRate ?? 0
+  const targetSampleRate = dsdDecodeRate(sourceDsdRate, dsdOptions.sampleRate) ||
+    dsdDecodeRate(FALLBACK_DSD_RATE, dsdOptions.sampleRate)
+  const targetChannels = 2
   const targetBitDepth = 32
   const outputFormat: LocalPreparedFormatInfo = {
     format: 'WAV',
@@ -138,51 +143,12 @@ export async function prepareLocalPlaybackFile(
     bitrate: Math.round((targetSampleRate * targetBitDepth * targetChannels) / 1000),
     channels: targetChannels,
     isLossless: true,
-    isHiRes: targetSampleRate > 48_000 || targetBitDepth > 16,
+    isHiRes: true,
     isMqa: false,
     isDsd: false,
   }
-  const outputPath = path.join(getLocalDsdCacheDir(), `${cacheKey}.wav`)
-
-  const task = (async () => {
-    if (!fs.existsSync(outputPath)) {
-      const ffmpegPath = getFfmpegPath()
-      const args = (useSoxr: boolean) => [
-        '-hide_banner',
-        '-loglevel', 'error',
-        '-y',
-        '-i', filePath,
-        '-vn',
-        '-map_metadata', '-1',
-        '-af', buildDsdFilterChain(dsdOptions, useSoxr),
-        '-c:a', 'pcm_f32le',
-        '-ac', String(targetChannels),
-        outputPath,
-      ]
-
-      try {
-        await execFileAsync(ffmpegPath, args(true))
-      } catch (error) {
-        // An external ffmpeg (PUROS_FFMPEG_PATH / Homebrew) may lack libsoxr or asupercut.
-        try {
-          await execFileAsync(ffmpegPath, args(false))
-          console.warn('[Puros] ffmpeg has no SoX resampler; DSD converted with the default resampler:', error)
-        } catch (fallbackError) {
-          const message = fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
-          throw new Error(`Failed to prepare DSD playback via ffmpeg: ${message}`)
-        }
-      }
-    }
-
-    return { playbackPath: outputPath, outputFormat }
-  })()
-
-  localDsdPreparationTasks.set(cacheKey, task)
-  try {
-    return await task
-  } finally {
-    localDsdPreparationTasks.delete(cacheKey)
-  }
+  const options = sanitizeDsdConversionOptions({ ...dsdOptions, sampleRate: targetSampleRate })
+  return { playbackPath: toDsdPcmTarget(filePath, options), outputFormat }
 }
 
 export async function inspectPlaybackFileFormat(filePath: string) {

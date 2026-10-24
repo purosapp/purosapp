@@ -8,6 +8,7 @@
 
 import { Airplay, Check, ChevronDown, Headphones, Settings2, Speaker, Volume2 } from 'lucide-react'
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { GlassPopover } from './GlassPanel'
 import { usePlayerStore } from '../store/playerStore'
 import { useAudioSetupStore } from '../store/audioSetupStore'
 import {
@@ -36,6 +37,8 @@ import {
   isAirPlayTransport,
   isSharedOnlyTransport,
 } from '../utils/audioDeviceTransport'
+import { Button } from './ui'
+import { Segmented, Switch } from './settings/controls'
 
 function formatPlaybackSummary(
   audioMode: 'exclusive' | 'shared' | 'closed',
@@ -126,6 +129,7 @@ export default function AudioOutputSelector() {
   const [expandedDevice, setExpandedDevice] = useState<string | null>(null)
   const [airPlayStatus, setAirPlayStatus] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const popoverRef = useRef<HTMLDivElement>(null)
 
   const audioDevice = usePlayerStore((s) => s.audioDevice)
   const audioMode = usePlayerStore((s) => s.audioMode)
@@ -169,7 +173,8 @@ export default function AudioOutputSelector() {
   useEffect(() => {
     if (!isOpen) return
     const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node))
+      const target = e.target as Node
+      if (menuRef.current && !menuRef.current.contains(target) && !popoverRef.current?.contains(target))
         setIsOpen(false)
     }
     document.addEventListener('mousedown', handler)
@@ -213,7 +218,7 @@ export default function AudioOutputSelector() {
         )
       default:
         return (
-          <span className="px-2 py-0.5 text-[10px] font-semibold uppercase rounded-full bg-zinc-800 text-zinc-400">
+          <span className="px-2 py-0.5 text-[10px] font-semibold uppercase rounded-full bg-white/5 text-zinc-400">
             Closed
           </span>
         )
@@ -306,35 +311,43 @@ export default function AudioOutputSelector() {
   return (
     <div className="relative" ref={menuRef}>
       {/* Trigger button */}
-      <button
+      <Button
+        variant="ghost"
+        size="sm"
+        icon={Headphones}
+        iconOnly
+        label={`Output: ${deviceName ?? 'Default System Settings'} (${audioMode})`}
         onClick={() => { setIsOpen((v) => !v); refreshDevices() }}
-        className="p-1.5 text-zinc-400 hover:text-zinc-200 transition-colors"
         title={`Output: ${deviceName ?? 'Default System Settings'} (${audioMode})`}
-      >
-        <Headphones className="w-4 h-4" />
-      </button>
+      />
 
       {isOpen && (
-        <div className="absolute bottom-full right-0 mb-2 w-80 bg-zinc-900 border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50">
+        <GlassPopover
+          ref={popoverRef}
+          anchorRef={menuRef}
+          radius={12}
+          className="w-80 border border-transparent overflow-hidden"
+        >
           {/* Header */}
-          <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between">
+          <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-zinc-100">Audio Output</h3>
             <div className="flex items-center gap-2">
               {modeBadge()}
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="xs"
+                icon={Settings2}
+                iconOnly
+                label="Audio Setup"
                 onClick={() => { setIsOpen(false); openSettings('audio') }}
-                className="p-1 rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-white/5 transition-colors"
                 title="Audio Setup"
                 aria-label="Open Audio Setup"
-              >
-                <Settings2 className="w-3.5 h-3.5" />
-              </button>
+              />
             </div>
           </div>
 
           {/* Exclusive mode toggle */}
-          <div className="px-4 py-3 border-b border-white/10">
+          <div className="px-4 py-3 border-b border-white/5">
             <div className="flex items-center justify-between">
               <div>
                 <p className={`text-sm ${isDefaultDevice ? 'text-zinc-500' : 'text-zinc-200'}`}>
@@ -348,62 +361,40 @@ export default function AudioOutputSelector() {
                     : 'Bit-perfect output — takes full control of the DAC'}
                 </p>
               </div>
-              <button
-                onClick={handleToggleMode}
+              <Switch
+                checked={audioMode === 'exclusive'}
+                onChange={() => handleToggleMode()}
                 disabled={exclusiveToggleDisabled}
+                label="Exclusive mode"
                 title={
                   isDefaultDevice
-                    ? 'Tryb ekskluzywny wymaga konkretnego urządzenia'
+                    ? 'Exclusive mode needs a specific output device'
                     : sharedOnlyTransportLabel
                       ? `${sharedOnlyTransportLabel} uses shared mode`
                       : undefined
                 }
-                className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${
-                  exclusiveToggleDisabled
-                    ? 'opacity-40 cursor-not-allowed bg-zinc-800 border border-zinc-600'
-                    : audioMode === 'exclusive'
-                      ? 'bg-green-600'
-                      : 'bg-zinc-800 border border-zinc-600'
-                }`}
-              >
-                <span
-                  className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all duration-200 ${
-                    audioMode === 'exclusive' ? 'left-[22px]' : 'left-0.5'
-                  }`}
-                />
-              </button>
+              />
             </div>
           </div>
 
           {/* Volume control — how level is set in exclusive mode (Roon-style) */}
           {!exclusiveToggleDisabled && activePhysicalDevice && (
-            <div className="px-4 py-3 border-b border-white/10">
+            <div className="px-4 py-3 border-b border-white/5">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-sm text-zinc-200">Volume Control</p>
-                <div className="flex rounded-md border border-white/10 bg-white/[0.03] p-0.5">
-                  {VOLUME_MODE_SETTINGS.map((mode) => {
+                <Segmented
+                  value={volumeMode}
+                  onChange={(mode) => void handleSelectVolumeMode(mode)}
+                  options={VOLUME_MODE_SETTINGS.map((mode) => {
                     const disabled = mode === 'device' && !hardwareVolumeAvailable
-                    const selected = volumeMode === mode
-                    return (
-                      <button
-                        key={mode}
-                        type="button"
-                        disabled={disabled}
-                        onClick={() => void handleSelectVolumeMode(mode)}
-                        title={disabled ? 'This device has no hardware volume control' : undefined}
-                        className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
-                          selected
-                            ? 'bg-white/15 text-zinc-100'
-                            : disabled
-                              ? 'text-zinc-600 cursor-not-allowed'
-                              : 'text-zinc-400 hover:text-zinc-100'
-                        }`}
-                      >
-                        {volumeModeLabel(mode)}
-                      </button>
-                    )
+                    return {
+                      id: mode,
+                      label: volumeModeLabel(mode),
+                      disabled,
+                      title: disabled ? 'This device has no hardware volume control' : undefined,
+                    }
                   })}
-                </div>
+                />
               </div>
               <p className="text-xs text-zinc-500 mt-1">
                 {volumeMode === 'auto' ? `${volumeModeLabel(volumeModePreview)}: ` : ''}
@@ -418,7 +409,7 @@ export default function AudioOutputSelector() {
 
           {/* Current device format + playback decision */}
           {deviceFormat && deviceFormat.sampleRate > 0 && (
-            <div className="px-4 py-2 border-b border-white/10 space-y-1">
+            <div className="px-4 py-2 border-b border-white/5 space-y-1">
               <div className="flex items-center justify-between">
                 <p className="text-xs text-zinc-500">Device Format</p>
                 <span className="text-xs font-mono text-zinc-300">
@@ -512,7 +503,7 @@ export default function AudioOutputSelector() {
                               <span className={`px-1.5 py-0.5 text-[9px] font-semibold uppercase rounded-full shrink-0 ${
                                 isAirPlay
                                   ? 'bg-sky-950 text-sky-300'
-                                  : 'bg-zinc-800 text-zinc-300'
+                                  : 'bg-white/5 text-zinc-300'
                               }`}>
                                 {transportLabel}
                               </span>
@@ -546,7 +537,7 @@ export default function AudioOutputSelector() {
                         <div className="px-4 pb-2 pl-11">
                           <div className="flex flex-wrap gap-1">
                             {[...new Set(device.supportedFormats.map(f => f.sampleRate))].sort((a, b) => a - b).map(rate => (
-                              <span key={rate} className="px-1.5 py-0.5 text-[9px] font-mono bg-zinc-800 text-zinc-400 rounded">
+                              <span key={rate} className="px-1.5 py-0.5 text-[9px] font-mono bg-white/5 text-zinc-400 rounded-full">
                                 {rate / 1000}kHz
                               </span>
                             ))}
@@ -555,7 +546,7 @@ export default function AudioOutputSelector() {
                             {[...new Set(device.supportedFormats.map(f => `${f.bitDepth}bit${f.isFloat ? ' float' : ''}`))]
                               .sort()
                               .map(label => (
-                                <span key={label} className="px-1.5 py-0.5 text-[9px] font-mono bg-zinc-800 text-zinc-400 rounded">
+                                <span key={label} className="px-1.5 py-0.5 text-[9px] font-mono bg-white/5 text-zinc-400 rounded-full">
                                   {label}
                                 </span>
                               ))}
@@ -579,7 +570,7 @@ export default function AudioOutputSelector() {
             )}
           </div>
 
-          <div className="px-4 py-3 border-t border-white/10 bg-white/[0.02]">
+          <div className="px-4 py-3 border-t border-white/5 bg-white/[0.02]">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-[11px] font-medium text-zinc-200">
@@ -596,15 +587,10 @@ export default function AudioOutputSelector() {
                   </p>
                 )}
               </div>
-              <button
-                onClick={() => { void openAirPlayDiscovery() }}
-                className="shrink-0 px-2.5 py-1 text-[10px] font-medium rounded-md bg-zinc-800 text-zinc-200 hover:bg-zinc-700 transition-colors"
-              >
-                Browse
-              </button>
+              <Button variant="secondary" size="xs" label="Browse" onClick={() => { void openAirPlayDiscovery() }} className="shrink-0" />
             </div>
           </div>
-        </div>
+        </GlassPopover>
       )}
     </div>
   )

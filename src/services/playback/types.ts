@@ -22,6 +22,17 @@ export class PlaybackPreparationCancelledError extends Error {
   }
 }
 
+/** The provider says this account cannot stream the track; skip it rather than stop. */
+export class TrackUnavailableError extends Error {
+  readonly reason: string
+
+  constructor(reason: string, message: string) {
+    super(message)
+    this.name = 'TrackUnavailableError'
+    this.reason = reason
+  }
+}
+
 export interface PreparedPlayback {
   playbackTarget: string | null
   /** The prepared file's format; drives output negotiation. */

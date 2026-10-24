@@ -18,16 +18,31 @@ import {
   type LyricsProviderConfig,
   type ResolvedLyrics,
 } from './LyricsProviderService'
-import LyricsPanel from './LyricsPanel'
+import LyricsPanel, { EDGE_FADE_MASK } from './LyricsPanel'
 import VisualizerPanel from './VisualizerPanel'
+import JewelCaseArtwork from './JewelCaseArtwork'
 import { useVisualizerStore } from '../../../store/visualizerStore'
+import { useWindowActivity, useWindowDormant } from '../../../services/windowActivity'
+import { enabledNowPlayingTabs, NOW_PLAYING_TAB_LABELS, type NowPlayingTabId } from '../../../services/nowPlayingTabs'
 
 interface NowPlayingOverlayProps {
   open: boolean
   onClose: () => void
+  /** Width of the docked queue column, which stays visible beside the overlay. */
+  rightInset?: number
 }
 
-type NowPlayingTab = 'lyrics' | 'authors' | 'visualizer'
+const drag = { WebkitAppRegion: 'drag' } as CSSProperties
+const noDrag = { WebkitAppRegion: 'no-drag' } as CSSProperties
+
+const AMBIENT_FILTER = 'blur(72px) saturate(1.6)'
+// Size containment makes an element the containing block of fixed
+// descendants, which would trap the fullscreen visualizer, so it is dropped then.
+const containerFor = (vizFullscreen: boolean) => ({ containerType: vizFullscreen ? 'normal' : 'size' } as CSSProperties)
+
+const ROUND_BUTTON_CLASS = 'flex h-9 w-9 items-center justify-center rounded-full bg-white/[0.08] text-zinc-200 transition-colors hover:bg-white/[0.16] hover:text-white'
+
+type NowPlayingTab = NowPlayingTabId
 
 function formatCreditRole(role: CatalogCreditSummary['role']): string {
   switch (role) {
@@ -79,35 +94,14 @@ function fallbackRoleGroups(track: CatalogTrackSummary | null): Array<{ role: st
   return Array.from(grouped.entries()).map(([role, contributors]) => ({ role, contributors }))
 }
 
-function PanelShell({
-  header,
-  children,
-}: {
-  header: ReactNode
-  children: ReactNode
-}) {
-  return (
-    <div className="relative flex h-full min-h-[24rem] flex-col overflow-hidden rounded-[32px] border border-white/8 bg-black/18 shadow-[0_24px_70px_rgba(0,0,0,0.22)] backdrop-blur-2xl">
-      <div className="border-b border-white/8 px-6 py-4">
-        {header}
-      </div>
-      <div className="flex-1 min-h-0 overflow-hidden">
-        {children}
-      </div>
-    </div>
-  )
-}
-
 function AuthorsPanel({
   detailedCredits,
   loading,
   track,
-  header,
 }: {
   detailedCredits: ProviderTrackDetailsV1 | null
   loading: boolean
   track: CatalogTrackSummary | null
-  header: ReactNode
 }) {
   const roleGroups = detailedCredits?.roles?.length
     ? detailedCredits.roles
@@ -121,68 +115,60 @@ function AuthorsPanel({
     { label: 'Copyright', value: detailedCredits?.copyright ?? null },
   ].filter((entry) => entry.value)
 
-  return (
-    <PanelShell header={header}>
-      <div className="flex h-full flex-col overflow-y-auto px-6 py-6 md:px-8 md:py-8">
-        {loading ? (
-          <div className="flex h-full items-center justify-center text-sm text-zinc-500">
-            Loading credits…
-          </div>
-        ) : roleGroups.length > 0 ? (
-          <div className="space-y-7">
-            <div className="space-y-6">
-              {roleGroups.map((group) => (
-                <div key={`${group.role}-${group.contributors.join('|')}`}>
-                  <p className="text-[0.98rem] font-semibold text-zinc-100">{group.role}</p>
-                  <p className="mt-1.5 text-[0.98rem] leading-[1.55] text-zinc-300/88">
-                    {group.contributors.join(', ')}
-                  </p>
-                </div>
-              ))}
-            </div>
-
-            {metadata.length > 0 ? (
-              <div className="border-t border-white/8 pt-6">
-                <div className="space-y-5">
-                  {metadata.map((entry) => (
-                    <div key={entry.label}>
-                      <p className="text-[0.98rem] font-semibold text-zinc-100">{entry.label}</p>
-                      <p className="mt-1.5 text-[0.98rem] leading-[1.55] text-zinc-300/88">{entry.value}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-          </div>
-        ) : (
-          <div className="flex h-full items-center justify-center text-center text-sm text-zinc-500">
-            Credits unavailable for this track
-          </div>
-        )}
+  if (loading || roleGroups.length === 0) {
+    return (
+      <div className="flex h-full items-center text-lg font-semibold text-white/40">
+        {loading ? 'Loading credits…' : 'Credits unavailable for this track'}
       </div>
-    </PanelShell>
+    )
+  }
+
+  const entry = (label: string, value: string) => (
+    <div key={`${label}-${value}`}>
+      <p className="text-[13px] font-medium text-white/50">{label}</p>
+      <p className="mt-1 text-lg font-semibold leading-snug text-white">{value}</p>
+    </div>
+  )
+
+  return (
+    <div
+      className="h-full overflow-y-auto pr-2"
+      style={{ maskImage: EDGE_FADE_MASK, scrollbarWidth: 'none' }}
+    >
+      <div className="space-y-5 py-[10cqh]">
+        {roleGroups.map((group) => entry(group.role, group.contributors.join(', ')))}
+        {metadata.length > 0 ? (
+          <div className="space-y-5 border-t border-white/10 pt-5">
+            {metadata.map((item) => entry(item.label, item.value!))}
+          </div>
+        ) : null}
+      </div>
+    </div>
   )
 }
 
-export default function NowPlayingOverlay({ open, onClose }: NowPlayingOverlayProps) {
+export default function NowPlayingOverlay({ open, onClose, rightInset = 0 }: NowPlayingOverlayProps) {
   const {
     currentTrack,
     isPlaying,
     position,
     seek,
   } = usePlayerStore()
-  const showLyricsInNowPlaying = useSettingsStore((s) => s.showLyricsInNowPlaying)
+  const nowPlayingTabs = useSettingsStore((s) => s.nowPlayingTabs)
   const lyricsProviderPriority = useSettingsStore((s) => s.lyricsProviderPriority)
   const lyricsApiKeys = useSettingsStore((s) => s.lyricsApiKeys)
   const lyricsFontSize = useSettingsStore((s) => s.lyricsFontSize)
   const dimAlbumArtWhenLyricsVisible = useSettingsStore((s) => s.dimAlbumArtWhenLyricsVisible)
+  const artworkStyle = useSettingsStore((s) => s.nowPlayingArtworkStyle)
 
   const isDetached = useVisualizerStore((s) => s.isDetached)
   const setDetached = useVisualizerStore((s) => s.setDetached)
+  const windowActivity = useWindowActivity()
+  const windowDormant = useWindowDormant()
 
   const [ambientColor, setAmbientColor] = useState(DEFAULT_ARTWORK_AMBIENT_COLOR)
   const [isFullScreen, setIsFullScreen] = useState(false)
-  const [activeTab, setActiveTab] = useState<NowPlayingTab>('lyrics')
+  const [selectedTab, setSelectedTab] = useState<NowPlayingTab>('lyrics')
   const [vizFullscreen, setVizFullscreen] = useState(false)
   const [shouldMountVisualizer, setShouldMountVisualizer] = useState(false)
   const [lyrics, setLyrics] = useState<ResolvedLyrics | null>(null)
@@ -196,10 +182,21 @@ export default function NowPlayingOverlay({ open, onClose }: NowPlayingOverlayPr
   const providerDescriptors = useProviderStatusStore((state) => state.providers)
 
   const artworkSrc = resolveArtwork(currentTrack)
-  const showLyricsPanel = showLyricsInNowPlaying
-  const duoLayoutStyle = {
-    '--np-panel-size': 'min(68vh, 52rem)',
-    '--np-gap': 'clamp(1.5rem, 2vw, 2.5rem)',
+  const enabledTabs = enabledNowPlayingTabs(nowPlayingTabs)
+  // The chosen tab may have been turned off in Settings since; fall back to the first one left.
+  const activeTab: NowPlayingTab | undefined = enabledTabs.includes(selectedTab) ? selectedTab : enabledTabs[0]
+  const showTabPanel = enabledTabs.length > 0
+  const lyricsEnabled = nowPlayingTabs.lyrics
+  const authorsEnabled = nowPlayingTabs.authors
+  const visualizerEnabled = nowPlayingTabs.visualizer
+  // Artwork side, sized from the stage (a size container): fits its height
+  // under the track info, and with the lyrics column beside it, half its width.
+  const stageLayoutStyle = {
+    '--np-gap': 'clamp(2rem, 4cqw, 4.5rem)',
+    '--np-info': '4.5rem',
+    '--np-panel-size': showTabPanel
+      ? 'min(calc(100cqh - var(--np-info)), calc((100cqw - var(--np-gap)) / 2), 46rem)'
+      : 'min(calc(100cqh - var(--np-info)), 100cqw, 46rem)',
   } as CSSProperties
 
   useEffect(() => {
@@ -266,8 +263,17 @@ export default function NowPlayingOverlay({ open, onClose }: NowPlayingOverlayPr
     }
   }, [artworkSrc, currentTrack, open, providerDescriptors])
 
+  // Turned off in Settings, or out of sight for a while: give the visualizer's
+  // WebGL context back. After dormancy it remounts on return.
   useEffect(() => {
-    if (shouldMountVisualizer || !open || isDetached) return
+    if (windowDormant || !visualizerEnabled) {
+      setShouldMountVisualizer(false)
+      setVizFullscreen(false)
+    }
+  }, [visualizerEnabled, windowDormant])
+
+  useEffect(() => {
+    if (shouldMountVisualizer || !open || isDetached || windowDormant || !visualizerEnabled) return
 
     const timeoutId = window.setTimeout(() => {
       setShouldMountVisualizer(true)
@@ -276,10 +282,10 @@ export default function NowPlayingOverlay({ open, onClose }: NowPlayingOverlayPr
     return () => {
       window.clearTimeout(timeoutId)
     }
-  }, [isDetached, open, shouldMountVisualizer])
+  }, [isDetached, open, shouldMountVisualizer, visualizerEnabled, windowDormant])
 
   useEffect(() => {
-    if (!currentTrack) {
+    if (!currentTrack || !lyricsEnabled) {
       setLyrics(null)
       setLyricsLoading(false)
       return
@@ -315,10 +321,11 @@ export default function NowPlayingOverlay({ open, onClose }: NowPlayingOverlayPr
     return () => {
       cancelled = true
     }
-  }, [currentTrack, lyricsApiKeys, lyricsProviderPriority])
+  }, [currentTrack, lyricsApiKeys, lyricsEnabled, lyricsProviderPriority])
 
+  // The catalog summary and provider credits only feed the Authors tab.
   useEffect(() => {
-    if (!currentTrack?.catalogTrackId) {
+    if (!currentTrack?.catalogTrackId || !authorsEnabled) {
       setTrackSummary(null)
       return
     }
@@ -333,7 +340,7 @@ export default function NowPlayingOverlay({ open, onClose }: NowPlayingOverlayPr
     return () => {
       cancelled = true
     }
-  }, [currentTrack?.catalogTrackId])
+  }, [authorsEnabled, currentTrack?.catalogTrackId])
 
   const creditsProviders = providerDescriptors
     .filter((descriptor) => descriptor.status.state === 'ready'
@@ -351,7 +358,7 @@ export default function NowPlayingOverlay({ open, onClose }: NowPlayingOverlayPr
   const creditsCacheKey = creditsProviderId && creditsSourceId ? `${creditsProviderId}\u0000${creditsSourceId}` : null
 
   useEffect(() => {
-    if (!creditsProviderId || !creditsSourceId || !creditsCacheKey) {
+    if (!creditsProviderId || !creditsSourceId || !creditsCacheKey || !authorsEnabled) {
       setDetailedCredits(null)
       setDetailedCreditsLoading(false)
       return
@@ -396,7 +403,7 @@ export default function NowPlayingOverlay({ open, onClose }: NowPlayingOverlayPr
     return () => {
       cancelled = true
     }
-  }, [creditsProviderId, creditsSourceId, creditsCacheKey])
+  }, [authorsEnabled, creditsProviderId, creditsSourceId, creditsCacheKey])
 
   if (!currentTrack) return null
 
@@ -404,11 +411,7 @@ export default function NowPlayingOverlay({ open, onClose }: NowPlayingOverlayPr
     void window.puros.app.toggleFullScreen().then(setIsFullScreen).catch(() => {})
   }
 
-  const tabs: Array<{ id: NowPlayingTab; label: string }> = [
-    { id: 'lyrics', label: 'Lyrics' },
-    { id: 'authors', label: 'Authors' },
-    { id: 'visualizer', label: 'Visualizer' },
-  ]
+  const tabs = enabledTabs.map((id) => ({ id, label: NOW_PLAYING_TAB_LABELS[id] }))
   const lyricsMeta = lyrics?.providerId ? `Source: ${LYRICS_PROVIDER_LABELS[lyrics.providerId]}` : 'No lyrics source'
   const authorsMeta = detailedCredits?.roles?.length
     ? `${detailedCredits.roles.length} role groups`
@@ -417,192 +420,169 @@ export default function NowPlayingOverlay({ open, onClose }: NowPlayingOverlayPr
       : 'Track credits'
   const visualizerMeta = isPlaying ? 'Playing' : 'Paused'
   const activeMeta = activeTab === 'lyrics' ? lyricsMeta : activeTab === 'authors' ? authorsMeta : visualizerMeta
-  const panelHeader = (
-    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-      <div className="inline-flex w-fit rounded-full border border-white/10 bg-white/[0.04] p-1 backdrop-blur-xl">
-        {tabs.map((tab) => {
-          const active = tab.id === activeTab
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => { setActiveTab(tab.id); if (tab.id !== 'visualizer') setVizFullscreen(false) }}
-              className={`rounded-full px-4 py-2 text-xs font-medium tracking-[0.14em] uppercase transition duration-200 ${
-                active
-                  ? 'bg-white text-black shadow-[0_10px_24px_rgba(255,255,255,0.14)]'
-                  : 'text-zinc-400 hover:text-white'
-              }`}
-            >
-              {tab.label}
-            </button>
-          )
-        })}
-      </div>
-      <p className="text-xs text-zinc-500">{activeMeta}</p>
+  const artistLine = [currentTrack.artist, currentTrack.album].filter(Boolean).join(' — ')
+  const ambientLayer = (duration: string, reverse: boolean) => ({
+    animationName: 'now-playing-ambient-rotate',
+    animationDuration: duration,
+    animationTimingFunction: 'linear',
+    animationIterationCount: 'infinite',
+    animationDirection: reverse ? 'reverse' : 'normal',
+    // Slow ambient drift; not worth the GPU while another app has focus.
+    animationPlayState: isPlaying && windowActivity === 'active' ? 'running' : 'paused',
+    willChange: 'transform',
+    transformOrigin: 'center',
+  } as CSSProperties)
+  const visualizerPlaceholder = (icon: ReactNode, label: string) => (
+    <div className="flex h-full flex-col items-center justify-center gap-3 rounded-[30px] bg-black/30">
+      {icon}
+      <p className="text-sm text-white/40">{label}</p>
     </div>
   )
 
   return (
     <div
       aria-hidden={!open}
-      className={`fixed inset-x-0 transition-opacity duration-300 ${
-        vizFullscreen ? 'inset-0 z-50' : 'top-17 bottom-0 z-35'
+      className={`fixed left-0 overflow-hidden bg-black transition-[opacity,right] duration-300 ease-out ${
+        vizFullscreen ? 'inset-y-0 z-50' : 'inset-y-0 z-41'
       } ${open ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'}`}
+      style={{ right: vizFullscreen ? 0 : rightInset }}
     >
+      {/* Living artwork backdrop, like Apple Music's full-screen player: two
+          heavily blurred copies of the cover turning against each other. */}
       {artworkSrc ? (
-        <div className="absolute inset-0 overflow-hidden">
-          <div
-            className="absolute opacity-30"
-            style={{
-              inset: '-38%',
-              animationName: 'now-playing-ambient-rotate',
-              animationDuration: '72s',
-              animationTimingFunction: 'linear',
-              animationIterationCount: 'infinite',
-              animationPlayState: isPlaying ? 'running' : 'paused',
-              willChange: 'transform',
-              transformOrigin: 'center',
-            }}
-          >
+        <div className="absolute inset-0">
+          <div className="absolute" style={{ inset: '-30%', ...ambientLayer('80s', false) }}>
             <div
               className="absolute inset-0"
-              style={{
-                backgroundImage: `url("${artworkSrc}")`,
-                backgroundPosition: 'center',
-                backgroundSize: 'cover',
-                filter: 'blur(64px) saturate(1.1)',
-                animationName: 'now-playing-ambient-breathe',
-                animationDuration: '24s',
-                animationTimingFunction: 'ease-in-out',
-                animationIterationCount: 'infinite',
-                animationPlayState: isPlaying ? 'running' : 'paused',
-                willChange: 'transform',
-              }}
+              style={{ backgroundImage: `url("${artworkSrc}")`, backgroundPosition: 'center', backgroundSize: 'cover', filter: AMBIENT_FILTER }}
+            />
+          </div>
+          <div className="absolute" style={{ left: '-10%', top: '-40%', width: '90%', height: '120%', ...ambientLayer('56s', true) }}>
+            <div
+              className="absolute inset-0 rounded-full opacity-80"
+              style={{ backgroundImage: `url("${artworkSrc}")`, backgroundPosition: 'center', backgroundSize: 'cover', filter: AMBIENT_FILTER }}
             />
           </div>
         </div>
       ) : null}
-
       <div
-        className="absolute inset-0 transition-opacity duration-300"
-        style={{ backgroundColor: 'rgba(5, 5, 7, 0.82)', backdropFilter: 'blur(48px)' }}
+        className="absolute inset-0"
+        style={{
+          background: `
+            radial-gradient(circle at 20% 30%, ${rgba(ambientColor, 0.28)} 0%, transparent 55%),
+            linear-gradient(180deg, rgba(0,0,0,0.42) 0%, rgba(0,0,0,0.52) 60%, rgba(0,0,0,0.68) 100%)
+          `,
+        }}
       />
-      <div className="absolute inset-0 overflow-hidden transition-opacity duration-300">
-        <div
-          className="absolute"
-          style={{
-            inset: '-36%',
-            animationName: 'now-playing-ambient-rotate',
-            animationDuration: '92s',
-            animationTimingFunction: 'linear',
-            animationIterationCount: 'infinite',
-            animationPlayState: isPlaying ? 'running' : 'paused',
-            willChange: 'transform',
-            transformOrigin: 'center',
-          }}
-        >
-          <div
-            className="absolute inset-0"
-            style={{
-              background: `
-                radial-gradient(circle at 18% 28%, ${rgba(ambientColor, 0.44)} 0%, transparent 42%),
-                radial-gradient(circle at 82% 18%, ${rgba(ambientColor, 0.16)} 0%, transparent 30%),
-                linear-gradient(180deg, rgba(4,4,5,0.88) 0%, rgba(4,4,6,0.95) 100%)
-              `,
-              animationName: 'now-playing-ambient-breathe',
-              animationDuration: '32s',
-              animationTimingFunction: 'ease-in-out',
-              animationIterationCount: 'infinite',
-              animationPlayState: isPlaying ? 'running' : 'paused',
-              willChange: 'transform',
-            }}
-          />
-        </div>
-      </div>
 
       <div
-        className="relative flex h-full flex-col overflow-hidden px-5 pb-28 pt-5 transition-[transform,opacity] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] md:px-8 md:pb-32 md:pt-8 xl:px-10"
+        className="relative flex h-full flex-col transition-[transform,opacity] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
         style={{
           // vizFullscreen: remove transform so that position:fixed children are
           // contained by the viewport (not this div), allowing the visualizer to
           // escape and cover the full screen including the player bar.
-          transform: vizFullscreen ? 'none' : (open ? 'translateY(0)' : 'translateY(calc(100% + 6rem))'),
-          opacity: open ? 1 : 0.92,
+          transform: vizFullscreen ? 'none' : (open ? 'translateY(0)' : 'translateY(3rem)'),
+          opacity: open ? 1 : 0,
         }}
       >
-        <div className="pointer-events-none absolute right-5 top-5 z-10 flex items-center gap-2 md:right-8 md:top-8 xl:right-10">
-          <button
-            type="button"
-            aria-label={isFullScreen ? 'Exit Full Screen' : 'Enter Full Screen'}
-            title={isFullScreen ? 'Exit Full Screen (F11)' : 'Enter Full Screen (F11)'}
-            onClick={handleToggleFullScreen}
-            className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/65 backdrop-blur-xl transition duration-200 hover:bg-white/10 hover:text-white"
-          >
-            {isFullScreen ? (
-              <Minimize className="h-4 w-4" />
-            ) : (
-              <Maximize className="h-4 w-4" />
-            )}
-          </button>
-          <button
-            type="button"
-            aria-label="Minimize Now Playing"
-            title="Minimize Now Playing"
-            onClick={onClose}
-            className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/65 backdrop-blur-xl transition duration-200 hover:bg-white/10 hover:text-white"
-          >
-            <ChevronDown className="h-4 w-4" />
-          </button>
+        {/* Title bar row: drags the window (traffic lights sit on the left).
+            Only while open: Electron honours drag regions on invisible,
+            pointer-events: none elements, and the closed row would swallow
+            clicks on the sidebar and title bar beneath it. */}
+        <div className="relative flex h-17 shrink-0 items-center justify-center px-4" style={open ? drag : undefined}>
+          {showTabPanel ? (
+            <div role="tablist" className="inline-flex items-center gap-0.5 rounded-full bg-white/[0.08] p-1" style={noDrag}>
+              {tabs.map((tab) => {
+                const active = tab.id === activeTab
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => { setSelectedTab(tab.id); if (tab.id !== 'visualizer') setVizFullscreen(false) }}
+                    className={`h-7 rounded-full px-3.5 text-[13px] font-medium transition-colors ${
+                      active ? 'bg-white text-zinc-950' : 'text-zinc-300 hover:bg-white/[0.08] hover:text-white'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                )
+              })}
+            </div>
+          ) : null}
+          <div className="absolute right-4 flex items-center gap-2" style={noDrag}>
+            <button
+              type="button"
+              aria-label={isFullScreen ? 'Exit Full Screen' : 'Enter Full Screen'}
+              title={isFullScreen ? 'Exit Full Screen (F11)' : 'Enter Full Screen (F11)'}
+              onClick={handleToggleFullScreen}
+              className={ROUND_BUTTON_CLASS}
+            >
+              {isFullScreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
+            </button>
+            <button
+              type="button"
+              aria-label="Minimize Now Playing"
+              title="Minimize Now Playing (Esc)"
+              onClick={onClose}
+              className={ROUND_BUTTON_CLASS}
+            >
+              <ChevronDown className="h-4.5 w-4.5" strokeWidth={2.25} />
+            </button>
+          </div>
         </div>
-        <div className="flex flex-1 min-h-0 items-center justify-center">
+
+        {/* Stage: everything between the title bar and the floating player. */}
+        <div className="min-h-0 flex-1 px-8 pb-28 pt-4 xl:px-12" style={containerFor(vizFullscreen)}>
           <div
-            className={`grid min-h-0 w-full items-start ${
-              showLyricsPanel
-                ? 'grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]'
-                : 'grid-cols-1'
-            }`}
-            style={{
-              ...duoLayoutStyle,
-              gap: showLyricsPanel ? 'var(--np-gap)' : undefined,
-              maxWidth: showLyricsPanel
-                ? 'calc(var(--np-panel-size) * 2 + var(--np-gap))'
-                : 'min(var(--np-panel-size), 100%)',
-            }}
+            className="flex h-full items-center justify-center"
+            style={{ ...stageLayoutStyle, gap: 'var(--np-gap)' }}
           >
-            <div className={`flex min-h-0 flex-col ${showLyricsPanel ? '' : 'mx-auto w-full'}`}>
-              <div
-                className="relative aspect-square w-full overflow-hidden rounded-[30px] shadow-[0_30px_90px_rgba(0,0,0,0.5)]"
-                style={{ maxWidth: 'var(--np-panel-size)' }}
-              >
-                {largeArtworkSrc ? (
-                  <img
-                    src={largeArtworkSrc}
-                    alt=""
-                    className="h-full w-full object-cover"
-                    draggable={false}
-                  />
-                ) : (
-                  <div className="h-full w-full bg-zinc-900" />
-                )}
-                {dimAlbumArtWhenLyricsVisible && showLyricsPanel ? (
-                  <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_36%,rgba(0,0,0,0.08)_62%,rgba(0,0,0,0.3)_100%)]" />
+            <div className="flex shrink-0 flex-col" style={{ width: 'var(--np-panel-size)' }}>
+              {artworkStyle === 'jewelCase' ? (
+                <JewelCaseArtwork
+                  src={largeArtworkSrc}
+                  active={open && windowActivity === 'active'}
+                  dimmed={dimAlbumArtWhenLyricsVisible && showTabPanel}
+                />
+              ) : (
+                <div className="relative aspect-square w-full overflow-hidden rounded-[30px] shadow-[0_30px_90px_rgba(0,0,0,0.5)]">
+                  {largeArtworkSrc ? (
+                    <img
+                      src={largeArtworkSrc}
+                      alt=""
+                      className="h-full w-full object-cover"
+                      draggable={false}
+                    />
+                  ) : (
+                    <div className="h-full w-full bg-zinc-900" />
+                  )}
+                  {dimAlbumArtWhenLyricsVisible && showTabPanel ? (
+                    <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_36%,rgba(0,0,0,0.08)_62%,rgba(0,0,0,0.3)_100%)]" />
+                  ) : null}
+                </div>
+              )}
+              <div className="flex min-w-0 flex-col justify-end" style={{ height: 'var(--np-info)' }}>
+                <p className="truncate text-xl font-bold tracking-tight text-white">{currentTrack.title}</p>
+                {artistLine ? (
+                  <p className="mt-0.5 truncate text-[15px] font-medium text-white/60">{artistLine}</p>
                 ) : null}
               </div>
             </div>
 
-            {showLyricsPanel ? (
-              <div className="flex min-h-0 flex-col">
-                <div
-                  className="relative min-h-0 aspect-square w-full overflow-hidden"
-                  style={{ maxWidth: 'var(--np-panel-size)' }}
-                >
+            {showTabPanel ? (
+              <div
+                className="relative flex shrink-0 flex-col"
+                style={{ width: 'var(--np-panel-size)', height: 'calc(var(--np-panel-size) + var(--np-info))' }}
+              >
+                <div className="relative min-h-0 flex-1" style={containerFor(vizFullscreen)}>
                   {activeTab === 'lyrics' ? (
                     <LyricsPanel
                       lyrics={lyrics}
                       loading={lyricsLoading}
                       position={position}
                       fontSize={lyricsFontSize}
-                      headerContent={panelHeader}
                       onSeekToTime={lyrics?.synced ? (time) => {
                         seek(time)
                       } : undefined}
@@ -613,24 +593,15 @@ export default function NowPlayingOverlay({ open, onClose }: NowPlayingOverlayPr
                       detailedCredits={detailedCredits}
                       loading={detailedCreditsLoading}
                       track={trackSummary}
-                      header={panelHeader}
                     />
                   ) : null}
-                  {isDetached && activeTab === 'visualizer' ? (
-                    <div className="relative flex h-full min-h-96 flex-col items-center justify-center gap-3 overflow-hidden rounded-4xl border border-white/8 bg-black/18 shadow-[0_24px_70px_rgba(0,0,0,0.22)] backdrop-blur-2xl">
-                      <div className="border-b border-white/8 px-6 py-4 absolute top-0 inset-x-0">{panelHeader}</div>
-                      <ExternalLink className="h-8 w-8 text-white/20" strokeWidth={1.5} />
-                      <p className="text-sm text-white/30">Visualizer is open in a separate window</p>
-                    </div>
-                  ) : null}
-                  {!isDetached && activeTab === 'visualizer' && !shouldMountVisualizer ? (
-                    <div className="relative flex h-full min-h-96 flex-col items-center justify-center gap-3 overflow-hidden rounded-4xl border border-white/8 bg-black/18 shadow-[0_24px_70px_rgba(0,0,0,0.22)] backdrop-blur-2xl">
-                      <div className="border-b border-white/8 px-6 py-4 absolute top-0 inset-x-0">{panelHeader}</div>
-                      <div className="h-8 w-8 animate-pulse rounded-full border border-white/12 bg-white/[0.06]" />
-                      <p className="text-sm text-white/30">Preparing visualizer…</p>
-                    </div>
-                  ) : null}
-                  {!isDetached && shouldMountVisualizer ? (
+                  {isDetached && activeTab === 'visualizer'
+                    ? visualizerPlaceholder(<ExternalLink className="h-8 w-8 text-white/25" strokeWidth={1.5} />, 'Visualizer is open in a separate window')
+                    : null}
+                  {!isDetached && activeTab === 'visualizer' && !shouldMountVisualizer
+                    ? visualizerPlaceholder(<div className="h-8 w-8 animate-pulse rounded-full bg-white/10" />, 'Preparing visualizer…')
+                    : null}
+                  {visualizerEnabled && !isDetached && shouldMountVisualizer ? (
                     <div
                       className={`absolute inset-0 transition-opacity duration-200 ${
                         activeTab === 'visualizer' ? 'opacity-100' : 'pointer-events-none opacity-0'
@@ -641,13 +612,15 @@ export default function NowPlayingOverlay({ open, onClose }: NowPlayingOverlayPr
                         active={open && activeTab === 'visualizer'}
                         isPlaying={isPlaying}
                         ambientColor={ambientColor}
-                        header={panelHeader}
                         vizFullscreen={vizFullscreen}
                         onToggleVizFullscreen={() => setVizFullscreen(v => !v)}
                       />
                     </div>
                   ) : null}
                 </div>
+                <p className="flex shrink-0 items-end text-xs font-medium text-white/40" style={{ height: 'calc(var(--np-info) - 2.75rem)' }}>
+                  {activeMeta}
+                </p>
               </div>
             ) : null}
           </div>

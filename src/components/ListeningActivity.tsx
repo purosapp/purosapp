@@ -5,6 +5,9 @@ import {
   loadListeningStats,
   type ListeningStats,
 } from '../services/listeningStats'
+import { formatTotalDuration } from '../utils/formatTime'
+import { Section } from './ui'
+import { isWindowHidden } from '../services/windowActivity'
 
 const WEEKS = 53
 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -12,24 +15,21 @@ const DAY_LABELS = ['Mon', '', 'Wed', '', 'Fri', '', '']
 const CELL_GAP = 3
 const DAY_LABEL_WIDTH = 32
 const MIN_CELL = 10
-const MAX_CELL = 18
+/** Large enough that the year fills the panel on wide windows. */
+const MAX_CELL = 28
 /** Minutes a day needs to reach each colour step. */
 const LEVEL_MINUTES = [1, 30, 90, 180]
-const LEVEL_CLASSES = [
-  'bg-white/[0.05]',
-  'bg-blue-900',
-  'bg-blue-700',
-  'bg-blue-500',
-  'bg-blue-400',
-]
+/** Opacity of the accent at each level; level 0 is an empty cell. */
+const LEVEL_ALPHAS = [0, 25, 45, 70, 100]
 
-function formatDuration(seconds: number): string {
-  const totalMinutes = Math.floor(seconds / 60)
-  const hours = Math.floor(totalMinutes / 60)
-  const minutes = totalMinutes % 60
-  if (hours === 0) return `${minutes} min`
-  if (hours >= 100 || minutes === 0) return `${hours} h`
-  return `${hours} h ${minutes} min`
+/**
+ * A cell's colour: the accent, stronger with more listening. With a gradient
+ * accent the colour runs across the year (oldest week = start, today = end).
+ */
+function levelBackground(level: number, position: number): string | undefined {
+  if (level === 0) return undefined
+  const along = `color-mix(in oklab, var(--accent-to) ${Math.round(position * 100)}%, var(--accent-from))`
+  return `color-mix(in oklab, ${along} ${LEVEL_ALPHAS[level]}%, transparent)`
 }
 
 function formatHours(seconds: number): string {
@@ -74,12 +74,12 @@ function hasListening(stats: ListeningStats, date: Date) {
   return (stats[dayKey(date)]?.seconds ?? 0) >= 60
 }
 
-function StatTile({ label, value, detail }: { label: string; value: string; detail: string }) {
+function Stat({ label, value, detail }: { label: string; value: string; detail: string }) {
   return (
-    <div className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3">
-      <p className="text-[11px] uppercase tracking-wider text-zinc-500">{label}</p>
-      <p className="mt-1.5 text-xl font-semibold text-zinc-100 tabular-nums">{value}</p>
-      <p className="mt-0.5 text-[11px] text-zinc-600 tabular-nums">{detail}</p>
+    <div className="min-w-0 px-5 py-1 first:pl-0">
+      <p className="text-[11px] uppercase tracking-[0.22em] text-zinc-500">{label}</p>
+      <p className="mt-2 truncate text-2xl font-bold tracking-tight text-white tabular-nums">{value}</p>
+      <p className="mt-1 truncate text-xs text-zinc-500 tabular-nums">{detail}</p>
     </div>
   )
 }
@@ -101,7 +101,7 @@ export default function ListeningActivity() {
     }
     load()
     window.addEventListener(LISTENING_STATS_CHANGED_EVENT, load)
-    const interval = window.setInterval(load, 60_000)
+    const interval = window.setInterval(() => { if (!isWindowHidden()) load() }, 60_000)
     return () => {
       cancelled = true
       window.removeEventListener(LISTENING_STATS_CHANGED_EVENT, load)
@@ -177,22 +177,23 @@ export default function ListeningActivity() {
   }, [weeks, cellSize])
 
   return (
-    <section className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h2 className="text-[11px] uppercase tracking-[0.22em] text-zinc-500">Listening Activity</h2>
+    <Section
+      title="Listening Activity"
+      action={(
         <p className="text-xs text-zinc-500 tabular-nums">
           {formatHours(summary.year.seconds)} listened in the last year
         </p>
-      </div>
+      )}
+    >
 
-      <div className="rounded-2xl border border-white/5 bg-white/[0.03] p-5 space-y-5">
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <StatTile label="Today" value={formatDuration(summary.today.seconds)} detail={playsLabel(summary.today.plays)} />
-          <StatTile label="This week" value={formatDuration(summary.week.seconds)} detail={playsLabel(summary.week.plays)} />
-          <StatTile label="This month" value={formatDuration(summary.month.seconds)} detail={playsLabel(summary.month.plays)} />
-          <StatTile
+      <div className="rounded-2xl border border-white/5 p-5 space-y-6">
+        <div className="grid grid-cols-2 gap-y-4 lg:grid-cols-4 lg:divide-x lg:divide-white/5">
+          <Stat label="Today" value={formatTotalDuration(summary.today.seconds)} detail={playsLabel(summary.today.plays)} />
+          <Stat label="This week" value={formatTotalDuration(summary.week.seconds)} detail={playsLabel(summary.week.plays)} />
+          <Stat label="This month" value={formatTotalDuration(summary.month.seconds)} detail={playsLabel(summary.month.plays)} />
+          <Stat
             label="All time"
-            value={formatDuration(summary.allTime.seconds)}
+            value={formatTotalDuration(summary.allTime.seconds)}
             detail={`${playsLabel(summary.allTime.plays)} · ${summary.streak}-day streak`}
           />
         </div>
@@ -217,9 +218,13 @@ export default function ListeningActivity() {
                   {days.map(({ date, entry, future }) => (
                     <div
                       key={dayKey(date)}
-                      title={future ? undefined : `${entry ? formatDuration(entry.seconds) : 'No listening'} on ${date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}${entry?.plays ? ` · ${playsLabel(entry.plays)}` : ''}`}
-                      className={`rounded-[3px] ${future ? 'invisible' : LEVEL_CLASSES[levelFor(entry?.seconds ?? 0)]}`}
-                      style={{ width: cellSize, height: cellSize }}
+                      title={future ? undefined : `${entry ? formatTotalDuration(entry.seconds) : 'No listening'} on ${date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}${entry?.plays ? ` · ${playsLabel(entry.plays)}` : ''}`}
+                      className={`rounded-[4px] bg-white/[0.05] transition-colors hover:ring-1 hover:ring-white/60 ${future ? 'invisible' : ''}`}
+                      style={{
+                        width: cellSize,
+                        height: cellSize,
+                        background: future ? undefined : levelBackground(levelFor(entry?.seconds ?? 0), week / (WEEKS - 1)),
+                      }}
                     />
                   ))}
                 </div>
@@ -228,17 +233,17 @@ export default function ListeningActivity() {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-3 text-[11px] text-zinc-600">
+        <div className="flex flex-wrap items-center justify-between gap-3 text-[11px] text-zinc-500">
           <p>Counts time actually played. Skipped and seeked-over parts don’t count; a play counts after 30 seconds.</p>
           <div className="flex items-center gap-1.5">
             <span>Less</span>
-            {LEVEL_CLASSES.map((className) => (
-              <span key={className} className={`w-[11px] h-[11px] rounded-[3px] ${className}`} />
+            {LEVEL_ALPHAS.map((_, level) => (
+              <span key={level} className="w-[11px] h-[11px] rounded-[4px] bg-white/[0.05]" style={{ background: levelBackground(level, 0.5) }} />
             ))}
             <span>More</span>
           </div>
         </div>
       </div>
-    </section>
+    </Section>
   )
 }

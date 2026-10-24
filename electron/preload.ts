@@ -1,4 +1,4 @@
-import { ipcRenderer, contextBridge } from 'electron'
+import { ipcRenderer, contextBridge, webFrame } from 'electron'
 import type { FormatInfo } from '../src/services/local/formats'
 import type { AudioPlugin, AudioPluginParameter, InstalledAudioPlugin } from '../src/types/plugins'
 import type { HomeProviderCollectionBundle, HomeProviderShelf } from '../src/services/homeProviderShelves'
@@ -89,12 +89,24 @@ import type {
 
 export type { FirPreview, ImpulseResponseInspection, NativeFirDesign, NativeResamplerConfig, ResamplerStatus }
 
-/** DSD → PCM conversion done by ffmpeg with the SoX resampler. */
+import type { NativeRestoreConfig, RestoreSourceHint, RestoreStatus } from '../src/services/restoreSettings'
+import type { DockMenuState } from '../src/services/dockMenu'
+
+export type { NativeRestoreConfig, RestoreSourceHint, RestoreStatus }
+
+import type { WaveformChunk, WaveformRequest } from './main/audio/waveform'
+import type { WindowActivity } from './main/windowActivity'
+import type { DownloadsOverview, PlaylistDownloadState } from './main/downloads'
+
+export type { DownloadedPlaylistSummary, DownloadsOverview, PlaylistDownloadState } from './main/downloads'
+
+export type { WaveformChunk, WaveformRequest, WindowActivity }
+
+/** DSD → PCM conversion done by the audio engine as the file plays. */
 export interface DsdConversionOptions {
   sampleRate: number
   filterHz: number
   gainDb: number
-  precision: number
 }
 
 export interface HardwareVolumeInfo {
@@ -161,6 +173,8 @@ export interface TrackRow {
   channels: number | null
   lossless: number
   stream_info_fetched_at?: number | null
+  /** Why the account cannot stream this provider track; null when it can. */
+  unavailable_reason?: string | null
   year: number | null
   file_size: number | null
   modified_at: number | null
@@ -254,6 +268,11 @@ export interface PlaylistFolderInfo {
   position: number
 }
 
+/** A native context menu item; `id` is echoed back when the item is chosen. */
+export type ContextMenuItemSpec =
+  | { type: 'separator' }
+  | { id?: string; label: string; enabled?: boolean; submenu?: ContextMenuItemSpec[] }
+
 export interface ResolvedPlaybackQueue {
   skippedCount?: number
   rows: TrackRow[]
@@ -261,7 +280,9 @@ export interface ResolvedPlaybackQueue {
 }
 
 export const GENERIC_EVENT_CHANNELS = [
+  'app:accent-color-changed',
   'app:open-settings',
+  'app:window-activity-changed',
   'audio:bluetooth-info',
   'audio:default-device-changed',
   'audio:mode-changed',
@@ -273,6 +294,7 @@ export const GENERIC_EVENT_CHANNELS = [
   'library:scan-progress',
   'live-radio:changed',
   'player:media-command',
+  'player:open-recent',
   'playlists:changed',
   'provider:warning',
   'visualizer:attached',
@@ -281,6 +303,20 @@ export const GENERIC_EVENT_CHANNELS = [
 
 export type GenericEventChannel = typeof GENERIC_EVENT_CHANNELS[number]
 const genericEventChannels = new Set<string>(GENERIC_EVENT_CHANNELS)
+
+/**
+ * Corner radius of the main window, in px. Measured from AppKit on macOS 26:
+ * windows with a toolbar (Electron's hiddenInset adds one) use 26pt, plain
+ * titled windows 16pt. macOS 27 gives every window one uniform 20pt radius;
+ * earlier releases used 10pt.
+ */
+function windowCornerRadius(): number {
+  if (process.platform !== 'darwin') return 0
+  const major = Number(process.getSystemVersion().split('.')[0])
+  if (major >= 27) return 20
+  if (major === 26) return 26
+  return 10
+}
 
 const purosApi = {
   /** Installed (runtime-imported) provider packages; main owns file selection. */
@@ -357,8 +393,15 @@ const purosApi = {
       ipcRenderer.invoke('audio:open-shared', deviceUid),
     /** allowResample: the output was opened at the format chosen for this track; resample instead of reopening. */
     /** dsdOutputRate > 0: modulate to DSD at that rate (DoP). */
-    playFile: (filePath: string, allowResample = false, deemphasis = false, dsdOutputRate = 0): Promise<AudioResult> =>
-      ipcRenderer.invoke('audio:play-file', filePath, allowResample, deemphasis, dsdOutputRate),
+    /** sourceHint: codec metadata for Puros Restore where the decoder sees only PCM. */
+    playFile: (
+      filePath: string,
+      allowResample = false,
+      deemphasis = false,
+      dsdOutputRate = 0,
+      sourceHint: RestoreSourceHint = 'unknown',
+    ): Promise<AudioResult> =>
+      ipcRenderer.invoke('audio:play-file', filePath, allowResample, deemphasis, dsdOutputRate, sourceHint),
     /** CD pre-emphasis flagged in the CUE sheet or tags of a local file. */
     detectPreEmphasis: (filePath: string, cueSheetPath?: string | null, startOffsetMs?: number | null): Promise<boolean> =>
       ipcRenderer.invoke('audio:detect-pre-emphasis', filePath, cueSheetPath ?? null, startOffsetMs ?? null),
@@ -368,8 +411,14 @@ const purosApi = {
       dsdOptions?: DsdConversionOptions | null,
     ): Promise<{ playbackPath: string; outputFormat: FormatInfo | null }> =>
       ipcRenderer.invoke('audio:prepare-local-file', filePath, sourceFormat ?? null, dsdOptions ?? null),
-    queueNextFile: (filePath: string, allowResample = false, deemphasis = false, dsdOutputRate = 0): Promise<AudioResult> =>
-      ipcRenderer.invoke('audio:queue-next-file', filePath, allowResample, deemphasis, dsdOutputRate),
+    queueNextFile: (
+      filePath: string,
+      allowResample = false,
+      deemphasis = false,
+      dsdOutputRate = 0,
+      sourceHint: RestoreSourceHint = 'unknown',
+    ): Promise<AudioResult> =>
+      ipcRenderer.invoke('audio:queue-next-file', filePath, allowResample, deemphasis, dsdOutputRate, sourceHint),
     setResamplerConfig: (config: NativeResamplerConfig): Promise<void> =>
       ipcRenderer.invoke('audio:set-resampler-config', config),
     getResamplerStatus: (): Promise<ResamplerStatus> =>
@@ -409,6 +458,19 @@ const purosApi = {
       ipcRenderer.invoke('audio:get-processing-stats'),
     getVisualizerFrame: (): Promise<AudioVisualizerFrame> =>
       ipcRenderer.invoke('audio:get-visualizer-frame'),
+    /** Seek-bar waveform of a file, delivered in chunks through onWaveformChunk. */
+    startWaveform: (requestId: string, request: WaveformRequest): Promise<boolean> =>
+      ipcRenderer.invoke('waveform:start', requestId, request),
+    /** The growing file behind a waveform request has been fully written. */
+    finishWaveformSource: (requestId: string): Promise<void> =>
+      ipcRenderer.invoke('waveform:finish-source', requestId),
+    cancelWaveform: (requestId: string): Promise<void> =>
+      ipcRenderer.invoke('waveform:cancel', requestId),
+    onWaveformChunk: (callback: (chunk: WaveformChunk) => void) => {
+      const subscription = (_event: Electron.IpcRendererEvent, chunk: WaveformChunk) => callback(chunk)
+      ipcRenderer.on('waveform:chunk', subscription)
+      return () => { ipcRenderer.removeListener('waveform:chunk', subscription) }
+    },
     setVolume: (gain: number): Promise<void> =>
       ipcRenderer.invoke('audio:set-volume', gain),
     setDigitalVolume: (gain: number): Promise<void> =>
@@ -439,6 +501,11 @@ const purosApi = {
       ipcRenderer.invoke('dsp:get-eq-enabled'),
     clearEQProfile: (): Promise<void> =>
       ipcRenderer.invoke('dsp:clear-eq-profile'),
+    /** Puros Restore (native lossy-source restoration). */
+    setRestoreConfig: (config: NativeRestoreConfig): Promise<void> =>
+      ipcRenderer.invoke('dsp:set-restore-config', config),
+    getRestoreStatus: (): Promise<RestoreStatus> =>
+      ipcRenderer.invoke('dsp:get-restore-status'),
     loadEQFile: (): Promise<string | null> =>
       ipcRenderer.invoke('dsp:load-eq-file'),
     addPlugin: (): Promise<AudioPlugin | null> =>
@@ -508,10 +575,17 @@ const purosApi = {
 
   // --- App ---
   app: {
+    windowCornerRadius: windowCornerRadius(),
     convertVisualizerShaders: (shaders: { warp: string; comp: string }): Promise<{ warp: string; comp: string }> =>
       ipcRenderer.invoke('app:convert-visualizer-shaders', shaders),
     getUserDataPath: (): Promise<string> =>
       ipcRenderer.invoke('app:get-user-data-path'),
+    /** macOS Dock icon menu: playback state and recently played playlists ('player:open-recent' on click). */
+    setDockMenu: (state: DockMenuState): Promise<void> =>
+      ipcRenderer.invoke('app:set-dock-menu', state),
+    /** macOS / Windows accent colour as #rrggbb (null elsewhere); 'app:accent-color-changed' fires when it changes. */
+    getSystemAccentColor: (): Promise<string | null> =>
+      ipcRenderer.invoke('app:get-system-accent-color'),
     isFullScreen: (): Promise<boolean> =>
       ipcRenderer.invoke('app:is-full-screen'),
     toggleFullScreen: (): Promise<boolean> =>
@@ -541,6 +615,16 @@ const purosApi = {
       ipcRenderer.invoke('app:reset-app-data'),
     openVisualizerWindow: (): Promise<void> =>
       ipcRenderer.invoke('app:open-visualizer-window'),
+    closeVisualizerWindow: (): Promise<void> =>
+      ipcRenderer.invoke('app:close-visualizer-window'),
+    /** 'active', 'unfocused' or 'hidden' for this window; 'app:window-activity-changed' fires when it changes. */
+    getWindowActivity: (): Promise<WindowActivity> =>
+      ipcRenderer.invoke('app:get-window-activity'),
+    /** Drops Blink's in-memory caches (decoded images and such) while the window is out of sight. */
+    releaseRendererCaches: (): void => webFrame.clearCache(),
+    /** Shows a native menu at the cursor; resolves with the chosen item's id, or null. */
+    showContextMenu: (items: ContextMenuItemSpec[]): Promise<string | null> =>
+      ipcRenderer.invoke('app:show-context-menu', items),
   },
 
   home: {
@@ -774,6 +858,25 @@ const purosApi = {
       ipcRenderer.invoke('playlists:clearArtwork', playlistId),
     getArtwork: (playlistId: number): Promise<string | null> =>
       ipcRenderer.invoke('playlists:getArtwork', playlistId),
+  },
+
+  // --- Playlist downloads (offline playback) ---
+  downloads: {
+    getOverview: (): Promise<DownloadsOverview> =>
+      ipcRenderer.invoke('downloads:get-overview'),
+    getPlaylistState: (playlistId: number): Promise<PlaylistDownloadState> =>
+      ipcRenderer.invoke('downloads:get-playlist-state', playlistId),
+    enablePlaylist: (playlistId: number): Promise<PlaylistDownloadState> =>
+      ipcRenderer.invoke('downloads:enable-playlist', playlistId),
+    /** Returns how many downloaded files were deleted. */
+    removePlaylist: (playlistId: number): Promise<number> =>
+      ipcRenderer.invoke('downloads:remove-playlist', playlistId),
+    markTrack: (provider: string, sourceId: string, artifactPath: string): Promise<boolean> =>
+      ipcRenderer.invoke('downloads:mark-track', provider, sourceId, artifactPath),
+    pruneOrphans: (): Promise<number> =>
+      ipcRenderer.invoke('downloads:prune-orphans'),
+    removeAll: (): Promise<number> =>
+      ipcRenderer.invoke('downloads:remove-all'),
   },
 
   // --- Generic IPC for events ---

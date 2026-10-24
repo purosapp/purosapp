@@ -138,7 +138,7 @@ export class CatalogIngestService {
   private async doRebuildFromLibrarySources(): Promise<void> {
     const db = this.db
     const timestamp = nowSeconds()
-    const REBUILD_BATCH_SIZE = 500
+    const REBUILD_BATCH_SIZE = 100
     // Refresh membership without erasing the online catalogs of other providers.
     db.transaction(() => {
       for (const kind of ['artist', 'album', 'track']) {
@@ -255,7 +255,7 @@ export class CatalogIngestService {
     const tracks = db.prepare(`
       SELECT t.id, t.title, t.genres, t.duration_ms, t.track_number, t.disc_number,
              t.album_id, t.artist_id, t.source, t.source_id, t.isrc, t.upc, t.format, t.sample_rate,
-             t.bit_depth, t.bitrate, t.channels, t.lossless, t.stream_info_fetched_at,
+             t.bit_depth, t.bitrate, t.channels, t.lossless, t.stream_info_fetched_at, t.unavailable_reason,
              al.title as album_title,
              ar.name as artist_name,
              al.artwork_id as album_artwork_id,
@@ -286,6 +286,7 @@ export class CatalogIngestService {
       channels: number | null
       lossless: number
       stream_info_fetched_at: number | null
+      unavailable_reason: string | null
       album_title: string | null
       artist_name: string | null
       album_artwork_id: string | null
@@ -345,6 +346,7 @@ export class CatalogIngestService {
         localId: track.id,
         inLibrary: true,
         providerUrl: null,
+        unavailableReason: track.unavailable_reason,
       }, {
         albumId: catalogAlbumId,
         albumTitle: track.album_title,
@@ -574,6 +576,8 @@ export class CatalogIngestService {
       discNumber: track.discNumber ?? null,
       inLibrary: !!track.inLibrary,
       providerUrl: track.providerUrl ?? null,
+      // Each listing replaces what the last one said.
+      unavailableReason: track.playable === false ? (track.unavailableReason ?? 'other') : null,
     }, {
       albumId,
       albumTitle: track.albumTitle ?? null,
@@ -1325,8 +1329,8 @@ export class CatalogIngestService {
     this.db.prepare(`
       INSERT INTO catalog_track_sources (
         catalog_track_id, provider, source_id, local_track_id, in_library,
-        provider_priority, match_confidence, provider_url, last_seen_at, available
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        provider_priority, match_confidence, provider_url, last_seen_at, available, unavailable_reason
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(catalog_track_id, provider, source_id) DO UPDATE SET
         local_track_id = COALESCE(excluded.local_track_id, catalog_track_sources.local_track_id),
         in_library = CASE
@@ -1336,7 +1340,8 @@ export class CatalogIngestService {
         provider_url = COALESCE(excluded.provider_url, catalog_track_sources.provider_url),
         match_confidence = MAX(catalog_track_sources.match_confidence, excluded.match_confidence),
         last_seen_at = excluded.last_seen_at,
-        available = excluded.available
+        available = excluded.available,
+        unavailable_reason = excluded.unavailable_reason
     `).run(
       catalogTrackId,
       input.provider,
@@ -1348,6 +1353,7 @@ export class CatalogIngestService {
       input.providerUrl ?? null,
       payload.fetchedAt,
       this.isProviderAvailable(input.provider) ? 1 : 0,
+      input.unavailableReason ?? null,
     )
 
     if (payload.albumId) {

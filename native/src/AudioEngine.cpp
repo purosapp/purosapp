@@ -693,26 +693,38 @@ bool openDsdSourceFile(const std::string& filePath, TrackSlot& slot, std::string
         slot.dsd.dsfLeftBlock.resize(header.dsfBlockSizePerChannel);
         slot.dsd.dsfRightBlock.resize(header.dsfBlockSizePerChannel);
     } else {
-        slot.dsd.dffInterleavedBuffer.resize(16384);
+        // Whole frames (one byte per channel) per read.
+        slot.dsd.dffInterleavedBuffer.resize(static_cast<size_t>(header.channels) * 8192);
     }
 
     return true;
 }
 
+uint64_t dsdBytesPerChannel(const TrackSlot& slot) {
+    return (slot.dsd.totalSamplesPerChannel + 7ULL) / 8ULL;
+}
+
 bool refillDsfBlocks(TrackSlot& slot) {
     if (!slot.dsd.file) return false;
-    if (slot.dsd.bytesConsumedPerChannel * 8ULL >= slot.dsd.totalSamplesPerChannel) return false;
+    if (slot.dsd.bytesConsumedPerChannel >= dsdBytesPerChannel(slot)) return false;
 
+    const size_t blockSize = slot.dsd.dsfBlockSizePerChannel;
     const size_t bytesRemainingPerChannel = static_cast<size_t>(
-        std::min<uint64_t>(
-            static_cast<uint64_t>(slot.dsd.dsfBlockSizePerChannel),
-            (slot.dsd.totalSamplesPerChannel + 7ULL) / 8ULL - slot.dsd.bytesConsumedPerChannel
-        )
+        std::min<uint64_t>(blockSize, dsdBytesPerChannel(slot) - slot.dsd.bytesConsumedPerChannel)
     );
     if (bytesRemainingPerChannel == 0) return false;
 
-    if (!readExact(slot.dsd.file, slot.dsd.dsfLeftBlock.data(), bytesRemainingPerChannel)) return false;
-    if (!readExact(slot.dsd.file, slot.dsd.dsfRightBlock.data(), bytesRemainingPerChannel)) return false;
+    // Blocks are stored full size (the last one zero-padded), one per channel in turn;
+    // only the first two channels are played.
+    slot.dsd.dsfLeftBlock.resize(blockSize);
+    slot.dsd.dsfRightBlock.resize(blockSize);
+    if (!readExact(slot.dsd.file, slot.dsd.dsfLeftBlock.data(), blockSize)) return false;
+    if (!readExact(slot.dsd.file, slot.dsd.dsfRightBlock.data(), blockSize)) return false;
+    if (slot.dsd.channels > 2 &&
+        std::fseek(slot.dsd.file, static_cast<long>((slot.dsd.channels - 2) * static_cast<uint64_t>(blockSize)),
+                   SEEK_CUR) != 0) {
+        return false;
+    }
 
     slot.dsd.dsfLeftBlock.resize(bytesRemainingPerChannel);
     slot.dsd.dsfRightBlock.resize(bytesRemainingPerChannel);
@@ -727,6 +739,79 @@ bool refillDffInterleavedBuffer(TrackSlot& slot) {
     slot.dsd.dffBufferOffset = 0;
     slot.dsd.dffBufferValid = bytesRead;
     return bytesRead > 0;
+}
+
+// DSD → PCM source: up to `maxBytes` bytes per channel of the first two channels,
+// oldest bit in the MSB. Returns the bytes read per channel (0 at the end).
+size_t readDsdBytes(TrackSlot& slot, size_t maxBytes, uint8_t* left, uint8_t* right) {
+    auto& dsd = slot.dsd;
+    const uint64_t total = dsdBytesPerChannel(slot);
+    size_t count = 0;
+    while (count < maxBytes && dsd.bytesConsumedPerChannel < total) {
+        if (dsd.isDsf) {
+            if (dsd.dsfBlockByteIndex >= dsd.dsfLeftBlock.size() && !refillDsfBlocks(slot)) break;
+            const size_t run = std::min({maxBytes - count, dsd.dsfLeftBlock.size() - dsd.dsfBlockByteIndex,
+                                         static_cast<size_t>(total - dsd.bytesConsumedPerChannel)});
+            const uint8_t* l = dsd.dsfLeftBlock.data() + dsd.dsfBlockByteIndex;
+            const uint8_t* r = dsd.dsfRightBlock.data() + dsd.dsfBlockByteIndex;
+            for (size_t i = 0; i < run; ++i) {
+                left[count + i] = dsd.bitReverseBytes ? reverseBitsByte(l[i]) : l[i];
+                right[count + i] = dsd.bitReverseBytes ? reverseBitsByte(r[i]) : r[i];
+            }
+            dsd.dsfBlockByteIndex += run;
+            dsd.bytesConsumedPerChannel += run;
+            count += run;
+        } else {
+            if (dsd.dffBufferOffset + dsd.channels > dsd.dffBufferValid) {
+                if (!refillDffInterleavedBuffer(slot) || dsd.dffBufferValid < dsd.channels) break;
+            }
+            const uint8_t* frame = dsd.dffInterleavedBuffer.data() + dsd.dffBufferOffset;
+            left[count] = dsd.bitReverseBytes ? reverseBitsByte(frame[0]) : frame[0];
+            right[count] = dsd.bitReverseBytes ? reverseBitsByte(frame[1]) : frame[1];
+            dsd.dffBufferOffset += dsd.channels;
+            dsd.bytesConsumedPerChannel += 1;
+            count += 1;
+        }
+    }
+    return count;
+}
+
+// Positions a DSD source `targetBytesPerChannel` into its audio data.
+bool positionDsdSource(TrackSlot& slot, uint64_t targetBytesPerChannel) {
+    auto& dsd = slot.dsd;
+    if (!dsd.file) return false;
+    if (targetBytesPerChannel >= dsdBytesPerChannel(slot)) {
+        // At (or past) the end: the next read reports end of stream.
+        dsd.bytesConsumedPerChannel = dsdBytesPerChannel(slot);
+        dsd.dsfLeftBlock.clear();
+        dsd.dsfRightBlock.clear();
+        dsd.dsfBlockByteIndex = 0;
+        dsd.dffBufferOffset = 0;
+        dsd.dffBufferValid = 0;
+        return true;
+    }
+    if (dsd.isDsf) {
+        const uint64_t blockSize = static_cast<uint64_t>(dsd.dsfBlockSizePerChannel);
+        const uint64_t blockIndex = blockSize > 0 ? (targetBytesPerChannel / blockSize) : 0;
+        const uint64_t byteInBlock = blockSize > 0 ? (targetBytesPerChannel % blockSize) : 0;
+        const uint64_t fileOffset = dsd.dataOffset + (blockIndex * blockSize * static_cast<uint64_t>(dsd.channels));
+        if (std::fseek(dsd.file, static_cast<long>(fileOffset), SEEK_SET) != 0) return false;
+
+        dsd.bytesConsumedPerChannel = blockIndex * blockSize;
+        dsd.dsfBlockByteIndex = 0;
+        dsd.dsfLeftBlock.clear();
+        dsd.dsfRightBlock.clear();
+        if (!refillDsfBlocks(slot)) return false;
+        dsd.dsfBlockByteIndex = static_cast<size_t>(byteInBlock);
+        dsd.bytesConsumedPerChannel = targetBytesPerChannel;
+    } else {
+        const uint64_t fileOffset = dsd.dataOffset + (targetBytesPerChannel * static_cast<uint64_t>(dsd.channels));
+        if (std::fseek(dsd.file, static_cast<long>(fileOffset), SEEK_SET) != 0) return false;
+        dsd.bytesConsumedPerChannel = targetBytesPerChannel;
+        dsd.dffBufferOffset = 0;
+        dsd.dffBufferValid = 0;
+    }
+    return true;
 }
 
 bool outputFormatCanCarryDoP(const AudioStreamBasicDescription& format, uint32_t carrierSampleRate, std::string* reason = nullptr) {
@@ -2629,7 +2714,11 @@ void AudioEngine::resetTrackSlot(int slotIndex) {
     slot.sourceKind = TrackSourceKind::None;
     slot.dsd = DsdPlaybackState{};
     slot.bypassDsp = false;
+    slot.restoreSource = RestoreSourceClass::Unknown;
+    slot.restoreCodec.clear();
     slot.floatPipeline = false;
+    slot.sourceBits = 0;
+    slot.sourceFloat = false;
     slot.decodeRate = 0;
     slot.rateConverted = false;
     slot.resampler.reset();
@@ -2640,7 +2729,9 @@ void AudioEngine::resetTrackSlot(int slotIndex) {
     slot.deemphasisFilter.reset();
     slot.headroomGain = 1.0;
     slot.headroomDb = 0.0;
+    slot.headroomAuto = false;
     slot.firResampler.reset();
+    slot.dsdDecimator.reset();
     slot.dsdEncoder.reset();
     slot.dopOutput = false;
     slot.modulatorOverloads.store(0, std::memory_order_relaxed);
@@ -2692,6 +2783,11 @@ ResamplerStatus AudioEngine::getResamplerStatus() const {
     // A room-correction file that failed to load is reported even on the bit-perfect path.
     status.convolutionError = slot->convolutionError;
     if (!slot->floatPipeline) return status;
+    status.float64 = true;
+    status.sourceBits = slot->sourceBits;
+    status.sourceFloat = slot->sourceFloat;
+    status.outputBits = slot->quantizer.gridBits();
+    status.outputFloat = slot->quantizer.isFloat();
     status.resampling = slot->rateConverted;
     status.engine = !slot->rateConverted ? ""
         : slot->srcEngine == ResamplerEngine::Fir ? "fir"
@@ -2705,6 +2801,12 @@ ResamplerStatus AudioEngine::getResamplerStatus() const {
         status.modulatorOverloads = slot->modulatorOverloads.load(std::memory_order_relaxed);
     }
     status.convolutionError = slot->convolutionError;
+    if (slot->dsdDecimator) {
+        status.dsdSourceRate = slot->dsdDecimator->dsdRate();
+        status.dsdStages = slot->dsdDecimator->stageCount();
+        status.dsdFilterHz = slot->dsdDecimator->filterHz();
+        status.dsdGainDb = slot->dsdDecimator->gainDb();
+    }
     status.inputRate = slot->fileSampleRate;
     // With DSD output the PCM chain ends at the intermediate rate; the DoP carrier is not a PCM rate.
     status.outputRate = slot->dopOutput ? DsdEncoder::kIntermediateRate : slot->renderFormat.mSampleRate;
@@ -2720,6 +2822,7 @@ ResamplerStatus AudioEngine::getResamplerStatus() const {
     status.filter = slot->filterNx ? "nx" : "1x";
     status.deemphasis = slot->deemphasis;
     status.headroomDb = slot->headroomDb;
+    status.headroomAuto = slot->headroomAuto;
     const float peak = slot->peakLevel.load(std::memory_order_relaxed);
     status.peakDb = peak > 0.0f ? 20.0 * std::log10(static_cast<double>(peak)) : -200.0;
     status.clippedSamples = slot->clippedSamples.load(std::memory_order_relaxed);
@@ -2727,8 +2830,8 @@ ResamplerStatus AudioEngine::getResamplerStatus() const {
 }
 
 // Chooses how a PCM/compressed source reaches the output format:
-//   - same rate and enough bits → decode straight into the device format (bit-perfect);
-//   - otherwise → float32 decode, SoX or Apple resampling, DSP, dithered quantization.
+//   - same rate, enough bits and no DSP → decode straight into the device format (bit-perfect);
+//   - otherwise → float64 decode, SoX / FIR / Apple resampling, DSP, dithered quantization.
 bool AudioEngine::configureDecodePipeline(TrackSlot& slot, const AudioStreamBasicDescription& sourceFormat,
                                           bool deemphasis, uint32_t dsdOutputRate, std::string& error) {
     ResamplerConfig config;
@@ -2775,7 +2878,23 @@ bool AudioEngine::configureDecodePipeline(TrackSlot& slot, const AudioStreamBasi
     }
     const bool convolution = !roomSpectra.empty();
 
-    slot.floatPipeline = dsdOutput || rateDiffers || reducesBits || deemphasis || convolution;
+    // Like Roon: any processing widens the samples to 64-bit float and requantizes at the end.
+    // A DSD source is decoded straight into that chain.
+    const bool dsdSource = slot.dsdDecimator != nullptr;
+    const bool dsp = dsp_.isProcessing();
+    // Restoration engaged for this source (Auto: confirmed lossy only) needs the float path;
+    // a bypassed source keeps whatever path it would have had, bit-perfect included.
+    const bool restore = dsp_.restoreWouldEngage(slot.restoreSource);
+    slot.floatPipeline = dsdSource || dsdOutput || rateDiffers || reducesBits || deemphasis || convolution || dsp || restore;
+    const bool sourceIsFloatPcm = sourceFormat.mFormatID == kAudioFormatLinearPCM &&
+                                  (sourceFormat.mFormatFlags & kAudioFormatFlagIsFloat) != 0;
+    const bool sourceIsLossless = sourceFormat.mFormatID == kAudioFormatLinearPCM ||
+                                  sourceFormat.mFormatID == kAudioFormatAppleLossless ||
+                                  sourceFormat.mFormatID == kAudioFormatFLAC;
+    slot.sourceFloat = sourceIsFloatPcm || !sourceIsLossless;
+    slot.sourceBits = sourceIsFloatPcm ? sourceFormat.mBitsPerChannel
+        : slot.sourceFloat ? 32
+        : sourceBits;
     slot.rateConverted = rateDiffers;
     slot.ditherMode = config.dither;
     slot.deemphasis = deemphasis;
@@ -2783,9 +2902,20 @@ bool AudioEngine::configureDecodePipeline(TrackSlot& slot, const AudioStreamBasi
     // DSD output keeps at least 3 dB: PCM full scale is already 50 % modulation, and
     // inter-sample overs of loud masters (+2 dB is common) would overload the loop.
     constexpr double kMinDsdHeadroomDb = 3.0;
+    // Auto: 3 dB whenever the waveform is rebuilt (rate conversion, room correction, DSD
+    // decimation — filtered 1-bit streams overshoot full scale too), which is where
+    // inter-sample overs appear; requantization and de-emphasis add none.
+    // Puros Restore too: lossy decodes of loud masters already overshoot full scale
+    // (the plain decode path passes those overs on, the float path would clip them),
+    // and the rebuilt top end needs room of its own.
+    constexpr double kAutoHeadroomDb = 3.0;
+    const double requestedHeadroomDb = !config.headroomAuto ? config.headroomDb
+        : rateDiffers || convolution || restore || dsdSource ? kAutoHeadroomDb
+        : 0.0;
+    slot.headroomAuto = config.headroomAuto;
     slot.headroomDb = !slot.floatPipeline ? 0.0
-        : dsdOutput ? std::clamp(std::max(config.headroomDb, kMinDsdHeadroomDb), 0.0, 12.0)
-        : std::clamp(config.headroomDb, 0.0, 12.0);
+        : dsdOutput ? std::clamp(std::max(requestedHeadroomDb, kMinDsdHeadroomDb), 0.0, 12.0)
+        : std::clamp(requestedHeadroomDb, 0.0, 12.0);
     slot.headroomGain = std::pow(10.0, -slot.headroomDb / 20.0);
 
     if (!slot.floatPipeline) {
@@ -2798,42 +2928,46 @@ bool AudioEngine::configureDecodePipeline(TrackSlot& slot, const AudioStreamBasi
         return true;
     }
 
-    // FIR for integer ratios when selected; SoX for everything else it covers; Apple on request.
+    // FIR for integer ratios when selected; SoX for everything else it covers; Apple on request
+    // (it is ExtAudioFile's converter, so a DSD source uses SoX instead).
     const bool useFir = rateDiffers && config.engine == ResamplerEngine::Fir &&
                         FirResampler::supportsRatio(sourceRate, outputRate);
-    const bool useSoxr = rateDiffers && !useFir && config.engine != ResamplerEngine::Apple;
+    const bool useSoxr = rateDiffers && !useFir && (config.engine != ResamplerEngine::Apple || dsdSource);
     slot.srcEngine = useFir ? ResamplerEngine::Fir : useSoxr ? ResamplerEngine::Soxr : ResamplerEngine::Apple;
     slot.decodeRate = useFir || useSoxr ? sourceRate : outputRate;
 
     // Decode straight to float64: the whole processing chain runs in double precision.
-    AudioStreamBasicDescription client{};
-    client.mSampleRate = slot.decodeRate;
-    client.mFormatID = kAudioFormatLinearPCM;
-    client.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked;
-    client.mBitsPerChannel = 64;
-    client.mChannelsPerFrame = channels;
-    client.mBytesPerFrame = channels * 8;
-    client.mFramesPerPacket = 1;
-    client.mBytesPerPacket = client.mBytesPerFrame;
-    OSStatus status = ExtAudioFileSetProperty(slot.extAudioFile, kExtAudioFileProperty_ClientDataFormat,
-                                              sizeof(client), &client);
-    if (status != noErr) {
-        error = "Failed to set float decode format (error " + std::to_string(status) + ")";
-        return false;
-    }
+    // (The DSD decimator produces float64 itself.)
+    if (!dsdSource) {
+        AudioStreamBasicDescription client{};
+        client.mSampleRate = slot.decodeRate;
+        client.mFormatID = kAudioFormatLinearPCM;
+        client.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked;
+        client.mBitsPerChannel = 64;
+        client.mChannelsPerFrame = channels;
+        client.mBytesPerFrame = channels * 8;
+        client.mFramesPerPacket = 1;
+        client.mBytesPerPacket = client.mBytesPerFrame;
+        OSStatus status = ExtAudioFileSetProperty(slot.extAudioFile, kExtAudioFileProperty_ClientDataFormat,
+                                                  sizeof(client), &client);
+        if (status != noErr) {
+            error = "Failed to set float decode format (error " + std::to_string(status) + ")";
+            return false;
+        }
 
-    if (rateDiffers && slot.srcEngine == ResamplerEngine::Apple) {
-        // Apple resampler: tune the converter ExtAudioFile created for the client format.
-        AudioConverterRef converter = nullptr;
-        UInt32 size = sizeof(converter);
-        if (ExtAudioFileGetProperty(slot.extAudioFile, kExtAudioFileProperty_AudioConverter, &size, &converter) == noErr &&
-            converter) {
-            UInt32 complexity = config.appleComplexity;
-            UInt32 quality = std::min<uint32_t>(config.appleQuality, kAudioConverterQuality_Max);
-            AudioConverterSetProperty(converter, kAudioConverterSampleRateConverterComplexity, sizeof(complexity), &complexity);
-            AudioConverterSetProperty(converter, kAudioConverterSampleRateConverterQuality, sizeof(quality), &quality);
-            CFArrayRef noConfig = nullptr;
-            ExtAudioFileSetProperty(slot.extAudioFile, kExtAudioFileProperty_ConverterConfig, sizeof(noConfig), &noConfig);
+        if (rateDiffers && slot.srcEngine == ResamplerEngine::Apple) {
+            // Apple resampler: tune the converter ExtAudioFile created for the client format.
+            AudioConverterRef converter = nullptr;
+            UInt32 size = sizeof(converter);
+            if (ExtAudioFileGetProperty(slot.extAudioFile, kExtAudioFileProperty_AudioConverter, &size, &converter) == noErr &&
+                converter) {
+                UInt32 complexity = config.appleComplexity;
+                UInt32 quality = std::min<uint32_t>(config.appleQuality, kAudioConverterQuality_Max);
+                AudioConverterSetProperty(converter, kAudioConverterSampleRateConverterComplexity, sizeof(complexity), &complexity);
+                AudioConverterSetProperty(converter, kAudioConverterSampleRateConverterQuality, sizeof(quality), &quality);
+                CFArrayRef noConfig = nullptr;
+                ExtAudioFileSetProperty(slot.extAudioFile, kExtAudioFileProperty_ConverterConfig, sizeof(noConfig), &noConfig);
+            }
         }
     }
 
@@ -2958,16 +3092,17 @@ bool AudioEngine::prepareDopOutput(int slotIndex, uint32_t dsdRate, bool allowDe
 
 bool AudioEngine::prepareTrackSlot(int slotIndex, const std::string& filePath, std::string& error,
                                    bool allowDeviceReopen, bool allowResample, bool deemphasis,
-                                   uint32_t dsdOutputRate) {
+                                   uint32_t dsdOutputRate, RestoreSourceClass sourceHint,
+                                   const DsdPcmOptions& dsdPcm) {
     resetTrackSlot(slotIndex);
     auto& slot = trackSlots_[slotIndex];
 
-    if (!isRemoteAudioUrl(filePath) && isDsdFilePath(filePath)) {
-        if (mode_ != AudioMode::Exclusive) {
-            error = "Native DSD DoP playback requires exclusive mode";
-            return false;
-        }
+    // A DSD file goes out as DoP unless it is to be heard as PCM: requested, remodulated
+    // (PCM → DSD), or in shared mode where the mixer only takes PCM.
+    const bool dsdFile = !isRemoteAudioUrl(filePath) && isDsdFilePath(filePath);
+    const bool decodeDsd = dsdFile && (dsdPcm.sampleRate > 0 || dsdOutputRate > 0 || mode_ != AudioMode::Exclusive);
 
+    if (dsdFile && !decodeDsd) {
         if (!openDsdSourceFile(filePath, slot, error)) {
             return false;
         }
@@ -3064,6 +3199,11 @@ bool AudioEngine::prepareTrackSlot(int slotIndex, const std::string& filePath, s
         slot.sourceKind = TrackSourceKind::DsdDoP;
         slot.bypassDsp = true;
         dsp_.copyConfigTo(slot.dsp);
+        // Native DSD is never restored, in any mode.
+        slot.restoreSource = RestoreSourceClass::Dsd;
+        slot.restoreCodec = "DSD";
+        slot.dsp.prepareRestoreStage(false, RestorePosition::Source, slot.renderFormat.mSampleRate,
+                                     slot.renderFormat.mChannelsPerFrame, RestoreSourceClass::Dsd);
 
         if (slotIndex == activeSlotIndex_.load(std::memory_order_acquire)) {
             fprintf(stderr,
@@ -3096,28 +3236,71 @@ bool AudioEngine::prepareTrackSlot(int slotIndex, const std::string& filePath, s
         deactivateDsdOutputMode();
     }
 
-    CFURLRef fileUrl = createAudioSourceUrl(filePath);
-    if (!fileUrl) {
-        error = isRemoteAudioUrl(filePath) ? "Invalid stream URL" : "Invalid file path";
-        return false;
-    }
-
-    OSStatus status = ExtAudioFileOpenURL(fileUrl, &slot.extAudioFile);
-    CFRelease(fileUrl);
-    if (status != noErr) {
-        error = "Failed to open audio file (error " + std::to_string(status) + ")";
-        return false;
-    }
-
+    // Opens the file and describes what the decode path will read from it. A DSD source
+    // reads as 32-bit float stereo PCM at the decimator's rate (as a converted file would).
     AudioStreamBasicDescription sourceFormat{};
-    UInt32 size = sizeof(sourceFormat);
-    ExtAudioFileGetProperty(slot.extAudioFile, kExtAudioFileProperty_FileDataFormat, &size, &sourceFormat);
-    slot.fileSampleRate = sourceFormat.mSampleRate;
+    const auto openSource = [&]() -> bool {
+        if (decodeDsd) {
+            if (!openDsdSourceFile(filePath, slot, error)) return false;
+            const uint32_t pcmRate = DsdDecimator::decodeRate(
+                slot.dsd.sourceSampleRate, dsdPcm.sampleRate > 0 ? dsdPcm.sampleRate : 176400);
+            slot.dsdDecimator = std::make_unique<DsdDecimator>();
+            if (pcmRate == 0 ||
+                !slot.dsdDecimator->configure(slot.dsd.sourceSampleRate, pcmRate, dsdPcm.filterHz, dsdPcm.gainDb, 2, error)) {
+                if (error.empty()) error = "Unsupported DSD sample rate";
+                return false;
+            }
+            sourceFormat = {};
+            sourceFormat.mSampleRate = pcmRate;
+            sourceFormat.mFormatID = kAudioFormatLinearPCM;
+            sourceFormat.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked;
+            sourceFormat.mBitsPerChannel = 32;
+            sourceFormat.mChannelsPerFrame = 2;
+            sourceFormat.mBytesPerFrame = 8;
+            sourceFormat.mFramesPerPacket = 1;
+            sourceFormat.mBytesPerPacket = 8;
+            slot.fileSampleRate = pcmRate;
+            slot.totalFrames = static_cast<int64_t>(slot.dsd.totalSamplesPerChannel / slot.dsdDecimator->ratio());
+            return true;
+        }
 
-    SInt64 frames = 0;
-    size = sizeof(frames);
-    ExtAudioFileGetProperty(slot.extAudioFile, kExtAudioFileProperty_FileLengthFrames, &size, &frames);
-    slot.totalFrames = frames;
+        CFURLRef fileUrl = createAudioSourceUrl(filePath);
+        if (!fileUrl) {
+            error = isRemoteAudioUrl(filePath) ? "Invalid stream URL" : "Invalid file path";
+            return false;
+        }
+        const OSStatus status = ExtAudioFileOpenURL(fileUrl, &slot.extAudioFile);
+        CFRelease(fileUrl);
+        if (status != noErr) {
+            error = "Failed to open audio file (error " + std::to_string(status) + ")";
+            return false;
+        }
+
+        UInt32 size = sizeof(sourceFormat);
+        ExtAudioFileGetProperty(slot.extAudioFile, kExtAudioFileProperty_FileDataFormat, &size, &sourceFormat);
+        slot.fileSampleRate = sourceFormat.mSampleRate;
+        SInt64 frames = 0;
+        size = sizeof(frames);
+        ExtAudioFileGetProperty(slot.extAudioFile, kExtAudioFileProperty_FileLengthFrames, &size, &frames);
+        slot.totalFrames = frames;
+        return true;
+    };
+    const auto closeSource = [&]() {
+        if (slot.extAudioFile) {
+            ExtAudioFileDispose(slot.extAudioFile);
+            slot.extAudioFile = nullptr;
+        }
+        if (slot.dsd.file) {
+            std::fclose(slot.dsd.file);
+            slot.dsd.file = nullptr;
+        }
+        slot.dsdDecimator.reset();
+    };
+
+    if (!openSource()) {
+        closeSource();
+        return false;
+    }
 
     if (allowDeviceReopen && !allowResample && dsdOutputRate == 0 && mode_ == AudioMode::Exclusive) {
         const bool needReopen = !outputFormatCanRepresentSourcePcm(outputFormat_, sourceFormat);
@@ -3132,8 +3315,7 @@ bool AudioEngine::prepareTrackSlot(int slotIndex, const std::string& filePath, s
             const int queuedBefore = queuedSlotIndex_.load(std::memory_order_acquire);
 
             // openExclusive() changes the format in place while the device stays hogged.
-            ExtAudioFileDispose(slot.extAudioFile);
-            slot.extAudioFile = nullptr;
+            closeSource();
 
             bool opened = openExclusive(uid, targetRate, depth, false, error);
             if (!opened) {
@@ -3155,38 +3337,29 @@ bool AudioEngine::prepareTrackSlot(int slotIndex, const std::string& filePath, s
             activeSlotIndex_.store(activeBefore >= 0 ? activeBefore : slotIndex, std::memory_order_release);
             queuedSlotIndex_.store(queuedBefore, std::memory_order_release);
 
-            CFURLRef reopenUrl = createAudioSourceUrl(filePath);
-            if (!reopenUrl) {
-                error = isRemoteAudioUrl(filePath) ? "Invalid stream URL" : "Invalid file path";
+            if (!openSource()) {
+                closeSource();
                 return false;
             }
-            status = ExtAudioFileOpenURL(reopenUrl, &slot.extAudioFile);
-            CFRelease(reopenUrl);
-            if (status != noErr) {
-                error = "Failed to reopen audio file";
-                return false;
-            }
-
-            size = sizeof(sourceFormat);
-            ExtAudioFileGetProperty(slot.extAudioFile, kExtAudioFileProperty_FileDataFormat, &size, &sourceFormat);
-            slot.fileSampleRate = sourceFormat.mSampleRate;
-            frames = 0;
-            size = sizeof(frames);
-            ExtAudioFileGetProperty(slot.extAudioFile, kExtAudioFileProperty_FileLengthFrames, &size, &frames);
-            slot.totalFrames = frames;
         }
     } else if (!allowDeviceReopen && dsdOutputRate == 0 &&
                ((getActiveSlot() && (getActiveSlot()->sourceKind == TrackSourceKind::DsdDoP || getActiveSlot()->dopOutput)) ||
                 (!allowResample && !canGaplesslyQueueSourceFormat(sourceFormat)))) {
         error = "Queued track requires device reopen";
-        ExtAudioFileDispose(slot.extAudioFile);
-        slot.extAudioFile = nullptr;
+        closeSource();
         return false;
     }
 
+    // Puros Restore decides from the decoder's actual codec, not the file name.
+    if (decodeDsd) {
+        slot.restoreSource = RestoreSourceClass::Dsd;
+        slot.restoreCodec = "DSD";
+    } else {
+        slot.restoreSource = classifyRestoreSource(sourceFormat.mFormatID, sourceHint, slot.restoreCodec);
+    }
+
     if (!configureDecodePipeline(slot, sourceFormat, deemphasis, dsdOutputRate, error)) {
-        ExtAudioFileDispose(slot.extAudioFile);
-        slot.extAudioFile = nullptr;
+        closeSource();
         slot.resampler.reset();
         return false;
     }
@@ -3201,11 +3374,22 @@ bool AudioEngine::prepareTrackSlot(int slotIndex, const std::string& filePath, s
     slot.framesRead.store(0, std::memory_order_relaxed);
     slot.framesPlayed.store(0, std::memory_order_relaxed);
     slot.filePath = filePath;
-    slot.sourceKind = TrackSourceKind::ExtAudioFile;
+    slot.sourceKind = decodeDsd ? TrackSourceKind::DsdPcm : TrackSourceKind::ExtAudioFile;
     slot.bypassDsp = false;
     dsp_.copyConfigTo(slot.dsp);
     // DSP runs on the intermediate PCM before modulation.
     if (slot.dopOutput) slot.dsp.setSampleRate(DsdEncoder::kIntermediateRate);
+    {
+        // Restore runs on the decoded signal (before resampling) or after the DSP chain;
+        // without the float path only in place, where source and output rate are equal.
+        const RestorePosition position = dsp_.restoreConfig().position;
+        const double dspRate = slot.dopOutput ? DsdEncoder::kIntermediateRate : outputFormat_.mSampleRate;
+        const double stageRate = !slot.floatPipeline ? outputFormat_.mSampleRate
+            : position == RestorePosition::Source ? slot.decodeRate
+            : dspRate;
+        slot.dsp.prepareRestoreStage(slot.floatPipeline, position, stageRate, outputFormat_.mChannelsPerFrame,
+                                     slot.restoreSource);
+    }
 
     if (slotIndex == activeSlotIndex_.load(std::memory_order_acquire)) {
         fprintf(stderr,
@@ -3223,6 +3407,12 @@ bool AudioEngine::prepareTrackSlot(int slotIndex, const std::string& filePath, s
             mode_ == AudioMode::Exclusive ? "EXCLUSIVE" : "SHARED",
             (slot.fileSampleRate > 0 ? (double)slot.totalFrames / slot.fileSampleRate : 0.0),
             (long long)slot.totalFrames);
+        if (slot.dsdDecimator) {
+            fprintf(stderr, "  DSD:        %.4f MHz 1-bit -> %u Hz, %u stages, filter %s, gain %+.0f dB\n",
+                    slot.dsd.sourceSampleRate / 1e6, slot.dsdDecimator->pcmRate(), slot.dsdDecimator->stageCount(),
+                    slot.dsdDecimator->filterHz() > 0 ? (std::to_string(static_cast<int>(slot.dsdDecimator->filterHz())) + " Hz").c_str() : "off",
+                    slot.dsdDecimator->gainDb());
+        }
         if (slot.floatPipeline) {
             fprintf(stderr, "  Resampler:  %s %.0f -> %.0f Hz, dither %s%s\n",
                     !slot.rateConverted ? "none"
@@ -3235,6 +3425,13 @@ bool AudioEngine::prepareTrackSlot(int slotIndex, const std::string& filePath, s
                         : "off",
                     slot.quantizer.ditherActive() ? (std::to_string(slot.quantizer.ditherBits()) + " bit").c_str() : "");
         }
+        const RestoreStatus restore = slot.dsp.restoreStatus();
+        fprintf(stderr, "  Restore:    %s (%s source, codec %s)\n",
+                restore.inChain ? "active" : restore.config.mode == RestoreMode::Off ? "off" : "bypassed",
+                slot.restoreSource == RestoreSourceClass::Lossy ? "lossy"
+                    : slot.restoreSource == RestoreSourceClass::Lossless ? "lossless"
+                    : slot.restoreSource == RestoreSourceClass::Dsd ? "DSD" : "unknown",
+                slot.restoreCodec.c_str());
     }
 
     slot.decodeThread = std::thread(&AudioEngine::decodeThreadFunc, this, slotIndex);
@@ -3256,6 +3453,10 @@ void AudioEngine::decodeThreadFunc(int slotIndex) {
     std::vector<uint8_t> buffer(framesPerRead * bytesPerFrame);
     std::vector<double> decodeIn;
     std::vector<double> converted;
+    std::vector<uint8_t> dsdLeft, dsdRight;
+    std::vector<double> dsdPcm;
+    // Room for a block plus the Restore tail (≤ 16384 frames) so the stage never reallocates.
+    decodeIn.reserve(static_cast<size_t>(framesPerRead + 16384) * std::max<uint32_t>(1, renderFormat.mChannelsPerFrame));
     auto lastDecodeSample = std::chrono::steady_clock::now();
     AudioBufferList bufList;
     bufList.mNumberBuffers = 1;
@@ -3285,50 +3486,90 @@ void AudioEngine::decodeThreadFunc(int slotIndex) {
             numFrames = static_cast<UInt32>(packedFrames);
             bytesToWrite = packedFrames * bytesPerFrame;
         } else if (slot.floatPipeline) {
-            if (!slot.extAudioFile || !slot.ringBuffer) {
+            if ((!slot.extAudioFile && !slot.dsdDecimator) || !slot.ringBuffer) {
                 slot.fileEof.store(true, std::memory_order_relaxed);
                 break;
             }
 
             const uint32_t channels = std::max<uint32_t>(1, renderFormat.mChannelsPerFrame);
-            decodeIn.resize(static_cast<size_t>(framesPerRead) * channels);
-            AudioBufferList decodeList;
-            decodeList.mNumberBuffers = 1;
-            decodeList.mBuffers[0].mNumberChannels = channels;
-            decodeList.mBuffers[0].mDataByteSize = static_cast<UInt32>(decodeIn.size() * sizeof(double));
-            decodeList.mBuffers[0].mData = decodeIn.data();
+            UInt32 readFrames = 0;
+            if (slot.dsdDecimator) {
+                // DSD → PCM: about one block of PCM frames' worth of bytes; drained at the end.
+                const size_t bytesPerRead = static_cast<size_t>(framesPerRead) * slot.dsdDecimator->ratio() / 8;
+                dsdLeft.resize(bytesPerRead);
+                dsdRight.resize(bytesPerRead);
+                const size_t bytes = readDsdBytes(slot, bytesPerRead, dsdLeft.data(), dsdRight.data());
+                const uint8_t* channelBytes[2] = {dsdLeft.data(), dsdRight.data()};
+                dsdPcm.clear();
+                slot.dsdDecimator->process(channelBytes, bytes, dsdPcm);
+                endAfterWrite = bytes == 0;
+                if (endAfterWrite) slot.dsdDecimator->flush(dsdPcm);
+                readFrames = static_cast<UInt32>(dsdPcm.size() / 2);
+                decodeIn.resize(static_cast<size_t>(readFrames) * channels);
+                for (size_t f = 0; f < readFrames; ++f) {
+                    const double l = dsdPcm[f * 2], r = dsdPcm[f * 2 + 1];
+                    double* frame = decodeIn.data() + f * channels;
+                    if (channels == 1) {
+                        frame[0] = 0.5 * (l + r);
+                        continue;
+                    }
+                    frame[0] = l;
+                    frame[1] = r;
+                    for (uint32_t ch = 2; ch < channels; ++ch) frame[ch] = 0.0;
+                }
+            } else {
+                decodeIn.resize(static_cast<size_t>(framesPerRead) * channels);
+                AudioBufferList decodeList;
+                decodeList.mNumberBuffers = 1;
+                decodeList.mBuffers[0].mNumberChannels = channels;
+                decodeList.mBuffers[0].mDataByteSize = static_cast<UInt32>(decodeIn.size() * sizeof(double));
+                decodeList.mBuffers[0].mData = decodeIn.data();
 
-            UInt32 readFrames = framesPerRead;
-            const OSStatus status = ExtAudioFileRead(slot.extAudioFile, &readFrames, &decodeList);
-            endAfterWrite = status != noErr || readFrames == 0;
-            if (endAfterWrite) readFrames = 0;
-            decodeIn.resize(static_cast<size_t>(readFrames) * channels);
+                readFrames = framesPerRead;
+                const OSStatus status = ExtAudioFileRead(slot.extAudioFile, &readFrames, &decodeList);
+                endAfterWrite = status != noErr || readFrames == 0;
+                if (endAfterWrite) readFrames = 0;
+                decodeIn.resize(static_cast<size_t>(readFrames) * channels);
+            }
 
             if (readFrames > 0 && slot.deemphasis) slot.deemphasisFilter.process(decodeIn.data(), readFrames);
+            // Headroom first (everything up to the DSP chain is linear, so the place does not
+            // change the result): Restore's over-protection then works against the real ceiling.
+            if (readFrames > 0 && slot.headroomGain != 1.0) {
+                const size_t count = static_cast<size_t>(readFrames) * channels;
+                for (size_t i = 0; i < count; ++i) decodeIn[i] *= slot.headroomGain;
+            }
+
+            // Puros Restore on the decoded source, before any rate change (sample-aligned:
+            // it drops its priming frames and appends its tail at the end).
+            if (!slot.bypassDsp) slot.dsp.runRestoreStage(RestorePosition::Source, decodeIn, channels, endAfterWrite);
+            const size_t sourceFrames = decodeIn.size() / channels;
 
             // Rate conversion; at the end, drain the filter so the last milliseconds are not lost.
             std::vector<double>* stage = &decodeIn;
             if (slot.firResampler || slot.resampler) {
                 converted.clear();
                 if (slot.firResampler) {
-                    if (readFrames > 0) slot.firResampler->process(decodeIn.data(), readFrames, converted);
+                    if (sourceFrames > 0) slot.firResampler->process(decodeIn.data(), sourceFrames, converted);
                     if (endAfterWrite) slot.firResampler->flush(converted);
                 } else {
-                    if (readFrames > 0) slot.resampler->process(decodeIn.data(), readFrames, converted);
+                    if (sourceFrames > 0) slot.resampler->process(decodeIn.data(), sourceFrames, converted);
                     if (endAfterWrite) slot.resampler->flush(converted);
                 }
                 stage = &converted;
             }
             applyRoomCorrection(slot, *stage, channels, endAfterWrite);
 
+            const size_t dspFrames = stage->size() / channels;
+            if (dspFrames > 0 && !slot.bypassDsp) {
+                slot.dsp.processDouble(stage->data(), static_cast<uint32_t>(dspFrames), channels);
+            }
+            // ...or after the whole DSP chain, when placed there.
+            if (!slot.bypassDsp) slot.dsp.runRestoreStage(RestorePosition::AfterDsp, *stage, channels, endAfterWrite);
+
             double* pcm = stage->data();
             const size_t pcmFrames = stage->size() / channels;
             if (pcmFrames > 0) {
-                if (slot.headroomGain != 1.0) {
-                    const size_t count = pcmFrames * channels;
-                    for (size_t i = 0; i < count; ++i) pcm[i] *= slot.headroomGain;
-                }
-                if (!slot.bypassDsp) slot.dsp.processDouble(pcm, static_cast<uint32_t>(pcmFrames), channels);
                 float peak = 0.0f;
                 if (slot.dsdEncoder) {
                     buffer.clear();
@@ -3364,11 +3605,15 @@ void AudioEngine::decodeThreadFunc(int slotIndex) {
 
             OSStatus status = ExtAudioFileRead(slot.extAudioFile, &numFrames, &bufList);
             if (status != noErr || numFrames == 0) {
-                slot.fileEof.store(true, std::memory_order_relaxed);
-                break;
-            }
-
-            if (!slot.bypassDsp) {
+                // A Restore stage switched on mid-track still holds its delayed tail.
+                numFrames = slot.bypassDsp ? 0 : slot.dsp.drainRestore(
+                    buffer.data(), framesPerRead, renderFormat.mChannelsPerFrame,
+                    renderFormat.mBytesPerFrame / renderFormat.mChannelsPerFrame);
+                if (numFrames == 0) {
+                    slot.fileEof.store(true, std::memory_order_relaxed);
+                    break;
+                }
+            } else if (!slot.bypassDsp) {
                 slot.dsp.process(
                     buffer.data(),
                     numFrames,
@@ -3434,7 +3679,7 @@ bool AudioEngine::tryPromoteQueuedSlot() {
 }
 
 bool AudioEngine::playFile(const std::string& filePath, bool allowResample, bool deemphasis, uint32_t dsdOutputRate,
-                           std::string& error) {
+                           RestoreSourceClass sourceHint, const DsdPcmOptions& dsdPcm, std::string& error) {
     if (mode_ == AudioMode::Closed) {
         error = "No audio device open. Call openShared or openExclusive first.";
         return false;
@@ -3449,7 +3694,7 @@ bool AudioEngine::playFile(const std::string& filePath, bool allowResample, bool
     paused_.store(false, std::memory_order_relaxed);
     dsp_.setSampleRate(outputFormat_.mSampleRate);
     dsp_.resetState();
-    return prepareTrackSlot(0, filePath, error, true, allowResample, deemphasis, dsdOutputRate);
+    return prepareTrackSlot(0, filePath, error, true, allowResample, deemphasis, dsdOutputRate, sourceHint, dsdPcm);
 }
 
 bool AudioEngine::startPcmStream(std::string& error) {
@@ -3488,12 +3733,17 @@ bool AudioEngine::startPcmStream(std::string& error) {
     slot.sourceKind = TrackSourceKind::ManualPcm;
     slot.bypassDsp = false;
     dsp_.copyConfigTo(slot.dsp);
+    // The stream's codec arrives later (setPcmStreamSourceClass); until then it is unknown.
+    slot.restoreSource = RestoreSourceClass::Unknown;
+    slot.restoreCodec.clear();
+    slot.dsp.prepareRestoreStage(false, dsp_.restoreConfig().position, outputFormat_.mSampleRate,
+                                 outputFormat_.mChannelsPerFrame, RestoreSourceClass::Unknown);
     slot.prepared.store(true, std::memory_order_release);
     return true;
 }
 
 bool AudioEngine::queueNextFile(const std::string& filePath, bool allowResample, bool deemphasis, uint32_t dsdOutputRate,
-                                std::string& error) {
+                                RestoreSourceClass sourceHint, const DsdPcmOptions& dsdPcm, std::string& error) {
     if (mode_ == AudioMode::Closed) {
         error = "No audio device open";
         return false;
@@ -3507,9 +3757,11 @@ bool AudioEngine::queueNextFile(const std::string& filePath, bool allowResample,
 
     cleanupRetiredSlot();
     const int queued = getInactiveSlotIndex();
-    if (!prepareTrackSlot(queued, filePath, error, false, allowResample, deemphasis, dsdOutputRate)) {
+    if (!prepareTrackSlot(queued, filePath, error, false, allowResample, deemphasis, dsdOutputRate, sourceHint, dsdPcm)) {
         return false;
     }
+    // Gapless: the next track starts from the cutoff this one found instead of re-learning it.
+    trackSlots_[queued].dsp.seedRestoreFrom(trackSlots_[active].dsp);
 
     queuedSlotIndex_.store(queued, std::memory_order_release);
     return true;
@@ -3563,41 +3815,25 @@ void AudioEngine::seek(double position) {
             std::min<int64_t>(outputFrame, std::max<int64_t>(0, slot->totalFrames))
         );
         const uint64_t targetBytesPerChannel = targetFrame * 2ULL;
-
-        if (slot->dsd.isDsf) {
-            const uint64_t blockSize = static_cast<uint64_t>(slot->dsd.dsfBlockSizePerChannel);
-            const uint64_t blockIndex = blockSize > 0 ? (targetBytesPerChannel / blockSize) : 0;
-            const uint64_t byteInBlock = blockSize > 0 ? (targetBytesPerChannel % blockSize) : 0;
-            const uint64_t fileOffset =
-                slot->dsd.dataOffset + (blockIndex * blockSize * static_cast<uint64_t>(slot->dsd.channels));
-
-            if (std::fseek(slot->dsd.file, static_cast<long>(fileOffset), SEEK_SET) != 0) return;
-
-            slot->dsd.bytesConsumedPerChannel = blockIndex * blockSize;
-            slot->dsd.dsfBlockByteIndex = 0;
-            slot->dsd.dsfLeftBlock.clear();
-            slot->dsd.dsfRightBlock.clear();
-            if (!refillDsfBlocks(*slot)) return;
-            slot->dsd.dsfBlockByteIndex = static_cast<size_t>(byteInBlock);
-            slot->dsd.bytesConsumedPerChannel = targetBytesPerChannel;
-        } else {
-            const uint64_t fileOffset =
-                slot->dsd.dataOffset + (targetBytesPerChannel * static_cast<uint64_t>(slot->dsd.channels));
-            if (std::fseek(slot->dsd.file, static_cast<long>(fileOffset), SEEK_SET) != 0) return;
-
-            slot->dsd.bytesConsumedPerChannel = targetBytesPerChannel;
-            slot->dsd.dffBufferOffset = 0;
-            slot->dsd.dffBufferValid = 0;
-        }
+        if (!positionDsdSource(*slot, targetBytesPerChannel)) return;
 
         slot->dsd.markerPhase = (targetFrame % 2ULL) != 0;
         slot->dsd.primerFramesRemaining = kDoPPrimerFrames;
         slot->framesRead.store(static_cast<int64_t>(targetFrame), std::memory_order_relaxed);
         slot->framesPlayed.store(static_cast<int64_t>(targetFrame), std::memory_order_relaxed);
     } else {
-        if (!slot->extAudioFile) return;
-        const SInt64 fileFrame = static_cast<SInt64>(position * fileRate);
-        ExtAudioFileSeek(slot->extAudioFile, fileFrame);
+        if (slot->dsdDecimator) {
+            // Whole bytes: one PCM frame is ratio / 8 bytes per channel.
+            const uint64_t pcmFrame = static_cast<uint64_t>(std::max(0.0, position * fileRate));
+            const uint64_t targetBytes = std::min<uint64_t>(pcmFrame * (slot->dsdDecimator->ratio() / 8),
+                                                            dsdBytesPerChannel(*slot));
+            if (!positionDsdSource(*slot, targetBytes)) return;
+            slot->dsdDecimator->reset();
+        } else {
+            if (!slot->extAudioFile) return;
+            const SInt64 fileFrame = static_cast<SInt64>(position * fileRate);
+            ExtAudioFileSeek(slot->extAudioFile, fileFrame);
+        }
         if (slot->resampler) slot->resampler->reset();
         if (slot->firResampler) slot->firResampler->reset();
         if (slot->dsdEncoder) slot->dsdEncoder->reset();
@@ -3973,6 +4209,68 @@ void AudioEngine::clearEQProfile() {
     for (auto& slot : trackSlots_) {
         slot.dsp.clearProfile();
     }
+}
+
+// ---------------------------------------------------------------------------
+// Puros Restore
+// ---------------------------------------------------------------------------
+
+void AudioEngine::setRestoreConfig(const RestoreConfig& config) {
+    dsp_.setRestoreConfig(config);
+    for (auto& slot : trackSlots_) {
+        slot.dsp.setRestoreConfig(config);
+    }
+}
+
+void AudioEngine::setPcmStreamSourceClass(RestoreSourceClass sourceClass, const std::string& codec) {
+    TrackSlot* slot = getActiveSlot();
+    if (!slot || slot->sourceKind != TrackSourceKind::ManualPcm) return;
+    slot->restoreSource = sourceClass;
+    slot->restoreCodec = codec;
+    slot->dsp.setRestoreSource(sourceClass);
+}
+
+RestoreEngineStatus AudioEngine::getRestoreStatus() const {
+    RestoreEngineStatus status;
+    const RestoreConfig config = dsp_.restoreConfig();
+    status.mode = config.mode == RestoreMode::Manual ? "manual" : config.mode == RestoreMode::Auto ? "auto" : "off";
+    status.position = config.position == RestorePosition::AfterDsp ? "afterDsp" : "source";
+    const TrackSlot* slot = getActiveSlot();
+    if (slot && slot->sourceKind != TrackSourceKind::None) {
+        status.codec = slot->restoreCodec;
+        status.sourceClass = slot->restoreSource == RestoreSourceClass::Lossy ? "lossy"
+            : slot->restoreSource == RestoreSourceClass::Lossless ? "lossless"
+            : slot->restoreSource == RestoreSourceClass::Dsd ? "dsd" : "unknown";
+    }
+    if (config.mode == RestoreMode::Off) {
+        status.state = "off";
+        return status;
+    }
+    if (!slot || slot->sourceKind == TrackSourceKind::None) {
+        status.state = "idle";
+        status.reason = "Nothing playing";
+        return status;
+    }
+    const RestoreStatus stage = slot->dsp.restoreStatus();
+    status.position = stage.position == RestorePosition::AfterDsp ? "afterDsp" : "source";
+    status.sampleRate = stage.sampleRate;
+    if (stage.inChain && stage.engaged) {
+        status.state = "active";
+        status.cutoffHz = stage.analysis.cutoffHz;
+        status.confidence = stage.analysis.confidence;
+        status.severity = stage.analysis.severity;
+        status.mix = stage.mix;
+        status.latencyMs = stage.latencySeconds * 1000.0;
+        status.reason = config.mode == RestoreMode::Manual ? "Enabled manually" : "Lossy source";
+        return status;
+    }
+    status.state = "bypassed";
+    status.mix = stage.inChain ? stage.mix : 0.0;
+    status.reason = slot->restoreSource == RestoreSourceClass::Dsd ? "DSD playback is never processed"
+        : config.mode == RestoreMode::Manual ? "Not available for this stream"
+        : slot->restoreSource == RestoreSourceClass::Lossless ? "Lossless source — left untouched"
+        : "Codec not confirmed lossy — left untouched";
+    return status;
 }
 
 // ---------------------------------------------------------------------------

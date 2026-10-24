@@ -168,7 +168,7 @@ export function getLibraryTracks(options?: { search?: string; limit?: number; of
              LIMIT 1
            ) as catalog_artist_id,
            t.duration_ms as duration, t.format, t.sample_rate, t.bit_depth,
-           t.bitrate, t.channels, t.lossless, t.stream_info_fetched_at, t.year, t.file_size,
+           t.bitrate, t.channels, t.lossless, t.stream_info_fetched_at, t.unavailable_reason, t.year, t.file_size,
            t.file_modified_at as modified_at,
            t.has_embedded_art, t.art_hash,
            t.album_id, t.artist_id,
@@ -333,7 +333,7 @@ export function getLibraryAlbumTracks(albumId: string) {
              LIMIT 1
            ) as catalog_artist_id,
            t.duration_ms as duration, t.format, t.sample_rate, t.bit_depth,
-           t.bitrate, t.channels, t.lossless, t.stream_info_fetched_at, t.year, t.file_size,
+           t.bitrate, t.channels, t.lossless, t.stream_info_fetched_at, t.unavailable_reason, t.year, t.file_size,
            t.album_id, t.artist_id,
            ar.name as artist_name,
            (
@@ -404,7 +404,7 @@ export function getLibraryArtistTracks(artistId: string) {
              LIMIT 1
            ) as catalog_artist_id,
            t.duration_ms as duration, t.format, t.sample_rate, t.bit_depth,
-           t.bitrate, t.channels, t.lossless, t.stream_info_fetched_at, t.year,
+           t.bitrate, t.channels, t.lossless, t.stream_info_fetched_at, t.unavailable_reason, t.year,
            t.album_id, t.artist_id,
            ar.name as artist_name,
            (
@@ -485,7 +485,7 @@ export async function searchLibrary(query: string) {
                  ORDER BY cas.in_library DESC, cas.match_confidence DESC
                  LIMIT 1
                ) as catalog_artist_id,
-               t.format, t.sample_rate, t.bit_depth, t.lossless, t.stream_info_fetched_at,
+               t.format, t.sample_rate, t.bit_depth, t.lossless, t.stream_info_fetched_at, t.unavailable_reason,
                ar.name as artist_name,
                (
                  SELECT group_concat(piece, '')

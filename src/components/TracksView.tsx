@@ -5,6 +5,8 @@ import { useCatalogStore } from '../store/catalogStore'
 import { useAppShellStore } from '../store/appShellStore'
 import { usePinsStore } from '../store/pinsStore'
 import { TrackTable } from './Explore'
+import { TrackListSkeleton } from './TrackList'
+import { PageHeader, PageStatus, SearchField } from './ui'
 
 export default function TracksView() {
   const providerId = useCatalogStore(s => s.activeProviderId)
@@ -51,36 +53,23 @@ export default function TracksView() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-4 px-6 pt-6 pb-3 shrink-0">
-        <div>
-          <h1 className="text-xl font-semibold text-zinc-100">Tracks</h1>
-          <p className="text-xs text-zinc-500 mt-0.5">
-            {isLoading ? 'Loading…' : `${tracks.length} ${tracks.length === 1 ? 'track' : 'tracks'} in this provider`}
-          </p>
-        </div>
-        <input
-          type="text"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter tracks"
-          className="w-52 px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-white/20"
-        />
-      </div>
+      <PageHeader
+        kicker="Library"
+        title="Tracks"
+        subtitle={isLoading ? 'Loading…' : `${tracks.length} ${tracks.length === 1 ? 'track' : 'tracks'} in this provider`}
+        actions={<SearchField value={filter} onChange={setFilter} placeholder="Filter tracks" />}
+      />
 
-      {/* Table */}
       {isLoading && tracks.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center">
-          <p className="text-sm text-zinc-500">Loading…</p>
+        <div className="flex-1 overflow-y-auto px-6 pb-6">
+          <TrackListSkeleton rows={12} />
         </div>
       ) : visible.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center px-6">
-          <p className="text-sm text-zinc-500 text-center">
-            {filter.trim()
-              ? `No tracks match “${filter.trim()}”.`
-              : 'No tracks in your library yet. Add music or sync a provider to get started.'}
-          </p>
-        </div>
+        <PageStatus
+          fill
+          title={filter.trim() ? `No tracks match “${filter.trim()}”.` : 'No tracks in your library yet.'}
+          hint={filter.trim() ? undefined : 'Add music or sync a provider to get started.'}
+        />
       ) : (
         <div className="flex-1 overflow-y-auto px-6 pb-6">
           <TrackTable

@@ -1,4 +1,5 @@
 import type { Track } from '../store/playerStore'
+import { useAppShellStore } from '../store/appShellStore'
 import { deleteSetting, getJsonSetting, setJsonSetting } from '../utils/appSettings'
 
 const RECENTLY_PLAYED_KEY = 'home:recentlyPlayed'
@@ -73,7 +74,7 @@ function isRecentLocalPlaylistEntry(row: RecentPlaylistEntry | null | undefined)
   return typeof row?.playlistId === 'number' && typeof row?.name === 'string'
 }
 
-function getRecentPlaylistDedupeKey(entry: Pick<
+export function getRecentPlaylistDedupeKey(entry: Pick<
   RecentPlaylistEntry,
   'entryKind' | 'playlistId' | 'provider' | 'sourceType' | 'sourceId' | 'itemId'
 >) {
@@ -81,6 +82,53 @@ function getRecentPlaylistDedupeKey(entry: Pick<
     return `provider:${entry.provider ?? ''}:${entry.sourceType ?? ''}:${entry.sourceId ?? ''}:${entry.itemId ?? ''}`
   }
   return `local:${entry.playlistId ?? 'missing'}`
+}
+
+function isProviderPlaylistRecent(
+  entry: RecentPlaylistEntry,
+): entry is RecentPlaylistEntry & {
+  entryKind: 'provider-playlist'
+  provider: string
+  sourceType: 'playlist' | 'mix' | 'station'
+  sourceId: string
+  itemId: string
+} {
+  return (
+    entry.entryKind === 'provider-playlist' &&
+    typeof entry.provider === 'string' &&
+    typeof entry.sourceType === 'string' &&
+    typeof entry.sourceId === 'string' &&
+    typeof entry.itemId === 'string'
+  )
+}
+
+/** Shows a recently played playlist: its synced local copy when there is one, else the provider collection. */
+export function openRecentPlaylist(playlist: RecentPlaylistEntry): void {
+  const { openProviderCollection, setActiveView } = useAppShellStore.getState()
+  if (isProviderPlaylistRecent(playlist)) {
+    if (typeof playlist.syncedPlaylistId === 'number') {
+      setActiveView(playlist.syncedPlaylistId)
+      return
+    }
+
+    openProviderCollection({
+      id: playlist.itemId,
+      provider: playlist.provider,
+      sourceType: playlist.sourceType,
+      sourceId: playlist.sourceId,
+      title: playlist.name,
+      subtitle: playlist.subtitle ?? null,
+      artworkUrl: playlist.artworkUrl ?? null,
+      providerUrl: playlist.providerUrl ?? null,
+      trackCount: playlist.trackCount ?? null,
+      syncedPlaylistId: playlist.syncedPlaylistId ?? null,
+    })
+    return
+  }
+
+  if (typeof playlist.playlistId === 'number') {
+    setActiveView(playlist.playlistId)
+  }
 }
 
 function emitHomeRecentsChanged() {

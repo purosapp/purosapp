@@ -25,8 +25,16 @@ import type {
   NativeResamplerConfig,
   ResamplerStatus,
 } from '../../../src/services/resamplingSettings'
+import type { NativeRestoreConfig, RestoreSourceHint, RestoreStatus } from '../../../src/services/restoreSettings'
 
 export type { FirPreview, ImpulseResponseInspection, NativeFirDesign, NativeResamplerConfig, ResamplerStatus }
+
+/** DSD → PCM in the engine (see localPlayback's DsdConversionOptions). */
+export interface NativeDsdPcmOptions {
+  sampleRate: number
+  filterHz: number
+  gainDb: number
+}
 
 export interface HardwareVolumeInfo {
   supported: boolean
@@ -58,9 +66,11 @@ export interface NativeAudioEngine {
   openExclusive(deviceUid: string, sampleRate: number, bitDepth: number, preferNonMixableInteger?: boolean): Promise<{ success: boolean; error?: string }>
   openShared(deviceUid: string): Promise<{ success: boolean; error?: string }>
   getDefaultOutputDeviceUid(): string | null
-  playFile(filePath: string, allowResample?: boolean, deemphasis?: boolean, dsdOutputRate?: number): Promise<{ success: boolean; error?: string }>
+  playFile(filePath: string, allowResample?: boolean, deemphasis?: boolean, dsdOutputRate?: number, sourceHint?: RestoreSourceHint,
+    dsdPcm?: NativeDsdPcmOptions | null): Promise<{ success: boolean; error?: string }>
   startPcmStream(): Promise<{ success: boolean; error?: string }>
-  queueNextFile(filePath: string, allowResample?: boolean, deemphasis?: boolean, dsdOutputRate?: number): Promise<{ success: boolean; error?: string }>
+  queueNextFile(filePath: string, allowResample?: boolean, deemphasis?: boolean, dsdOutputRate?: number, sourceHint?: RestoreSourceHint,
+    dsdPcm?: NativeDsdPcmOptions | null): Promise<{ success: boolean; error?: string }>
   clearQueuedFile(): Promise<void>
   stopPlayback(): Promise<void>
   pause(): void
@@ -106,6 +116,10 @@ export interface NativeAudioEngine {
   setEQEnabled(enabled: boolean): void
   getEQEnabled(): boolean
   clearEQProfile(): void
+  setRestoreConfig(config: NativeRestoreConfig): void
+  getRestoreStatus(): RestoreStatus
+  /** Live PCM stream: the codec its decoder reported. Serialized after startPcmStream(). */
+  setPcmStreamSourceClass(sourceClass: RestoreSourceHint, codec: string): Promise<void>
   setNowPlayingInfo(payload: {
     title: string
     artist: string

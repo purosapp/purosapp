@@ -31,6 +31,7 @@ type PlaylistTrackQueryRow = {
   title: string
   track_number: number | null
   disc_number: number
+  unavailable_reason?: string | null
   catalog_track_id?: string | null
   catalog_album_id?: string | null
   catalog_artist_id?: string | null
@@ -230,7 +231,7 @@ function queryPlaylistTrackRows(
            CASE WHEN p.source = 'local' THEN psi.position ELSE NULL END as playlist_stack_position,
            CASE WHEN p.source = 'local' THEN ss.stack_size ELSE NULL END as playlist_stack_size,
            t.id, t.file_path, t.playback_file_path, t.start_offset_ms, t.end_offset_ms, t.cue_sheet_path,
-           t.source, t.source_id, t.title, t.track_number, t.disc_number,
+           t.source, t.source_id, t.title, t.track_number, t.disc_number, t.unavailable_reason,
            (
              SELECT cts.catalog_track_id
              FROM catalog_track_sources cts
@@ -412,7 +413,11 @@ export async function resolvePlaylistPlaybackQueue(
   if (playlist && isLocalPlaylistSource(playlist.source)) {
     await repairPlaylistProviderTrackMetadata(db, playlistId, requestedIds)
   }
+  // Tracks the account cannot stream are shown greyed out, not queued; only
+  // rows that look playable but are not (missing files, offline providers)
+  // count as skipped.
   const allItems = getPlaylistResolvedItems(db, playlistId, requestedIds)
+    .filter((item) => !item.row.unavailable_reason)
   const items = allItems.filter(item => {
     const row = item.row
     if (!playlist || (!playlist.legacy_mixed && row.source !== playlist.playback_provider_id)) return false
@@ -644,9 +649,9 @@ async function hydrateProviderTrackFromCatalog(
     INSERT INTO tracks (
       id, file_path, duration_ms, format, sample_rate, bit_depth, channels,
       bitrate, lossless, title, track_number, disc_number, album_id, artist_id,
-      indexed_at, source, source_id
+      indexed_at, source, source_id, unavailable_reason
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'), ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'), ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       file_path = excluded.file_path,
       duration_ms = excluded.duration_ms,
@@ -680,7 +685,8 @@ async function hydrateProviderTrackFromCatalog(
       album_id = COALESCE(excluded.album_id, tracks.album_id),
       artist_id = COALESCE(excluded.artist_id, tracks.artist_id),
       source = excluded.source,
-      source_id = excluded.source_id
+      source_id = excluded.source_id,
+      unavailable_reason = excluded.unavailable_reason
   `).run(
     localTrackId,
     `${providerId}://track/${trackSourceId}`,
@@ -698,6 +704,7 @@ async function hydrateProviderTrackFromCatalog(
     primaryLocalArtistId,
     providerId,
     trackSourceId,
+    track.sourceLinks.find((source) => source.provider === providerId && source.sourceId === trackSourceId)?.unavailableReason ?? null,
   )
 
   db.prepare(`DELETE FROM track_artists WHERE track_id = ?`).run(localTrackId)

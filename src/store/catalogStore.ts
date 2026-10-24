@@ -11,6 +11,7 @@ import type {
 } from '../services/catalog/types'
 import type { PlaybackContext, Track } from './playerStore'
 import { usePlayerStore } from './playerStore'
+import { artworkUrl } from '../utils/artworkUrl'
 
 type CatalogView = 'search' | 'artist' | 'album'
 
@@ -91,6 +92,8 @@ interface CatalogState {
   addTrackToQueue: (track: CatalogTrackSummary, preferredProvider?: CatalogProviderName | null) => Promise<void>
   addTracksToQueue: (tracks: CatalogTrackSummary[], preferredProvider?: CatalogProviderName | null) => Promise<void>
   addAlbumToQueue: (catalogAlbumId: string, preferredProvider?: CatalogProviderName | null) => Promise<void>
+  /** Plays a whole album from a tile, without opening the album page. */
+  playAlbum: (catalogAlbumId: string, preferredProvider?: CatalogProviderName | null) => Promise<void>
 }
 
 function emptyResults(): CatalogSearchResults {
@@ -261,6 +264,9 @@ function isActiveSearchRequest(requestId: number) {
  */
 function catalogSummaryToQueueTrack(summary: CatalogTrackSummary): Track {
   const ref = summary.sourceRef
+  // The summary already carries the track's (or its album's) artwork, so
+  // queue rows can show it before the track is ever resolved.
+  const artwork = artworkUrl(summary.artworkId, summary.artworkUrl) ?? null
   return {
     id: summary.id,
     catalogTrackId: summary.id,
@@ -274,6 +280,8 @@ function catalogSummaryToQueueTrack(summary: CatalogTrackSummary): Track {
     sourceType: ref.providerId,
     sourceId: ref.sourceId,
     streamId: ref.providerId !== 'local' ? ref.sourceId : undefined,
+    coverUrl: artwork,
+    artworkUrl: artwork,
     formatInfo: summary.formatInfo ?? undefined,
     unresolved: true,
   }
@@ -937,14 +945,15 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
     // entries with ZERO resolution. Only the track that becomes current is
     // resolved (by AudioService, just-in-time) for its real source, artwork and
     // format — so clicking one song in a playlist does no work for the others.
+    // Unplayable tracks show greyed out and stay out of the queue. Start at the
+    // requested track, or the first playable one after it (an album whose
+    // opening track is region-locked still plays).
     const playbackContext = getPlaybackContextForCatalogState(get())
-    const requested = tracks[Math.max(0, Math.min(startIndex, tracks.length - 1))]
-    if (!requested?.availability.playable) { usePlayerStore.getState().setNotification('This track is unavailable from its provider'); return }
     const playable = tracks.filter(track => track.availability.playable)
+    const requested = tracks.slice(Math.max(0, startIndex)).find(track => track.availability.playable) ?? playable[0]
+    if (!requested) { usePlayerStore.getState().setNotification('None of these tracks are available'); return }
     const queue = playable.map(catalogSummaryToQueueTrack)
-    const safeStartIndex = playable.findIndex(track => track.id === requested.id)
-    if (playable.length !== tracks.length) usePlayerStore.getState().setNotification(`Skipped ${tracks.length - playable.length} unavailable tracks`)
-    usePlayerStore.getState().setQueue(queue, safeStartIndex, playbackContext)
+    usePlayerStore.getState().setQueue(queue, playable.indexOf(requested), playbackContext)
   },
 
   addTrackToQueue: async (track, preferredProvider) => {
@@ -959,7 +968,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
   addTracksToQueue: async (tracks, preferredProvider) => {
     const playbackContext = getPlaybackContextForCatalogState(get())
     const resolvedTracks = await Promise.all(
-      tracks.map((track) => resolveCatalogTrack(track, preferredProvider)),
+      tracks.filter((track) => track.availability.playable).map((track) => resolveCatalogTrack(track, preferredProvider)),
     )
     const queue = resolvedTracks.filter((track): track is Track => !!track)
     if (!queue.length) return
@@ -967,6 +976,12 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
     const player = usePlayerStore.getState()
     queue.forEach((track) => player.addToQueue(withCatalogPlaybackContext(track, playbackContext)))
     player.setNotification(`Added ${queue.length} ${queue.length === 1 ? 'track' : 'tracks'} to queue`)
+  },
+
+  playAlbum: async (catalogAlbumId, preferredProvider) => {
+    const tracks = await window.puros.catalog.getAlbumTracks(catalogAlbumId)
+    if (!tracks.length) return
+    await get().playTracks(tracks, 0, preferredProvider)
   },
 
   addAlbumToQueue: async (catalogAlbumId, preferredProvider) => {
@@ -977,7 +992,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
     if (!tracks.length) return
 
     const resolvedTracks = await Promise.all(
-      tracks.map((track) => resolveCatalogTrack(track, preferredProvider)),
+      tracks.filter((track) => track.availability.playable).map((track) => resolveCatalogTrack(track, preferredProvider)),
     )
     const queue = resolvedTracks.filter((track): track is Track => !!track)
     if (!queue.length) return

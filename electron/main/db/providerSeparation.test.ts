@@ -43,7 +43,7 @@ describe('source separation migration', () => {
     const db = legacy()
     const positions = db.prepare('SELECT * FROM playlist_tracks ORDER BY id').all()
     initSchema(db, () => {})
-    expect(db.pragma('user_version', { simple: true })).toBe(32)
+    expect(db.pragma('user_version', { simple: true })).toBe(33)
     expect(db.prepare('SELECT * FROM playlist_tracks ORDER BY id').all()).toEqual(positions)
     expect(db.prepare('SELECT playback_provider_id, management, legacy_mixed FROM playlists ORDER BY id').all()).toEqual([
       { playback_provider_id: 'local', management: 'app', legacy_mixed: 0 },

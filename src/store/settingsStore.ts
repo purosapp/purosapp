@@ -6,6 +6,14 @@ import type {
   CatalogLocalCreditGuidanceMode,
 } from '../services/catalog/types'
 import type { StreamingPlaybackMode } from '../services/playback/types'
+import { DEFAULT_ACCENT, parseAccentSetting, type AccentSetting } from '../utils/accentColor'
+import {
+  DEFAULT_NOW_PLAYING_TABS,
+  NOW_PLAYING_TABS_SETTING_KEY,
+  parseNowPlayingTabs,
+  type NowPlayingTabId,
+  type NowPlayingTabs,
+} from '../services/nowPlayingTabs'
 
 // ---------------------------------------------------------------------------
 // Player badge visibility
@@ -103,6 +111,11 @@ const DEFAULT_LYRICS_API_KEYS: Record<Exclude<LyricsProviderId, 'lrclib'>, strin
   genius: '',
 }
 
+export type SeekBarStyle = 'bar' | 'waveform'
+
+/** How the full-screen Now Playing view shows the cover: plain, or inside a 3D CD jewel case. */
+export type NowPlayingArtworkStyle = 'flat' | 'jewelCase'
+
 function normalizeResumeRewindSeconds(raw: unknown): ResumeRewindSeconds {
   const value = Number(raw)
   return value === 5 || value === 10 ? value : 0
@@ -110,6 +123,12 @@ function normalizeResumeRewindSeconds(raw: unknown): ResumeRewindSeconds {
 
 interface SettingsState {
   playerTags: PlayerTagSettings
+  /** Format/quality badges in the player bar. Off by default; the bar stays clean. */
+  showPlayerBadges: boolean
+  /** Plain progress bar, or a Roon-style waveform of the playing file. */
+  seekBarStyle: SeekBarStyle
+  /** App accent colour: follow macOS, one of its eight colours, or a custom hue. */
+  accent: AccentSetting
   artistBioSourcePriority: CatalogBioProvider[]
   artistArtworkSourcePriority: CatalogArtistArtworkProvider[]
   albumArtworkSourcePriority: CatalogAlbumArtworkProvider[]
@@ -137,14 +156,19 @@ interface SettingsState {
   resumeRewindSeconds: ResumeRewindSeconds
   /** Exclusive mode refuses any sample-rate conversion and reports an error instead. */
   strictSampleRate: boolean
-  showLyricsInNowPlaying: boolean
+  /** Which tabs the full-screen Now Playing view shows; none hides the tab column. */
+  nowPlayingTabs: NowPlayingTabs
   lyricsProviderPriority: LyricsProviderPreference[]
   lyricsApiKeys: Record<Exclude<LyricsProviderId, 'lrclib'>, string>
   lyricsFontSize: LyricsFontSize
   dimAlbumArtWhenLyricsVisible: boolean
+  nowPlayingArtworkStyle: NowPlayingArtworkStyle
   loaded: boolean
   load: () => Promise<void>
   setPlayerTag: (key: keyof PlayerTagSettings, value: boolean) => Promise<void>
+  setShowPlayerBadges: (enabled: boolean) => Promise<void>
+  setSeekBarStyle: (style: SeekBarStyle) => Promise<void>
+  setAccent: (accent: AccentSetting) => Promise<void>
   setArtistBioSourcePriority: (priority: CatalogBioProvider[]) => Promise<void>
   setArtistArtworkSourcePriority: (priority: CatalogArtistArtworkProvider[]) => Promise<void>
   setAlbumArtworkSourcePriority: (priority: CatalogAlbumArtworkProvider[]) => Promise<void>
@@ -167,15 +191,19 @@ interface SettingsState {
   setResumePlaybackOnLaunch: (enabled: boolean) => Promise<void>
   setResumeRewindSeconds: (seconds: ResumeRewindSeconds) => Promise<void>
   setStrictSampleRate: (enabled: boolean) => Promise<void>
-  setShowLyricsInNowPlaying: (enabled: boolean) => Promise<void>
+  setNowPlayingTabEnabled: (tab: NowPlayingTabId, enabled: boolean) => Promise<void>
   setLyricsProviderPriority: (priority: LyricsProviderPreference[]) => Promise<void>
   setLyricsApiKey: (provider: Exclude<LyricsProviderId, 'lrclib'>, apiKey: string) => Promise<void>
   setLyricsFontSize: (size: LyricsFontSize) => Promise<void>
   setDimAlbumArtWhenLyricsVisible: (enabled: boolean) => Promise<void>
+  setNowPlayingArtworkStyle: (style: NowPlayingArtworkStyle) => Promise<void>
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   playerTags: DEFAULT_TAGS,
+  showPlayerBadges: false,
+  seekBarStyle: 'bar',
+  accent: DEFAULT_ACCENT,
   artistBioSourcePriority: ['wikipedia', 'none'],
   artistArtworkSourcePriority: ['wikipedia', 'itunes', 'none'],
   albumArtworkSourcePriority: ['coverartarchive', 'none'],
@@ -198,11 +226,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   resumePlaybackOnLaunch: false,
   resumeRewindSeconds: 0,
   strictSampleRate: false,
-  showLyricsInNowPlaying: true,
+  nowPlayingTabs: DEFAULT_NOW_PLAYING_TABS,
   lyricsProviderPriority: DEFAULT_LYRICS_PROVIDERS,
   lyricsApiKeys: DEFAULT_LYRICS_API_KEYS,
   lyricsFontSize: 'medium',
   dimAlbumArtWhenLyricsVisible: true,
+  nowPlayingArtworkStyle: 'jewelCase',
   loaded: false,
 
   load: async () => {
@@ -227,6 +256,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       rawEndlessPlaybackEnabled,
       rawStrictSampleRate,
       rawShowLyricsInNowPlaying,
+      rawNowPlayingTabs,
       rawLyricsProviderPriority,
       rawLyricsMusixmatchApiKey,
       rawLyricsGeniusApiKey,
@@ -237,6 +267,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       rawRememberPlaybackSession,
       rawResumePlaybackOnLaunch,
       rawResumeRewindSeconds,
+      rawSeekBarStyle,
+      rawAccent,
+      rawShowPlayerBadges,
+      rawNowPlayingArtworkStyle,
       providerDescriptors,
     ] = await Promise.all([
       window.puros.settings.get('playerTags'),
@@ -259,6 +293,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       window.puros.settings.get('endlessPlaybackEnabled'),
       window.puros.settings.get('strictSampleRate'),
       window.puros.settings.get('lyricsShowInNowPlaying'),
+      window.puros.settings.get(NOW_PLAYING_TABS_SETTING_KEY),
       window.puros.settings.get('lyricsProviderPriority'),
       window.puros.settings.get('lyricsMusixmatchApiKey'),
       window.puros.settings.get('lyricsGeniusApiKey'),
@@ -269,6 +304,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       window.puros.settings.get('playbackSessionRemember'),
       window.puros.settings.get('playbackSessionAutoplay'),
       window.puros.settings.get('playbackSessionRewindSeconds'),
+      window.puros.settings.get('seekBarStyle'),
+      window.puros.settings.get('accentColor'),
+      window.puros.settings.get('showPlayerBadges'),
+      window.puros.settings.get('nowPlayingArtworkStyle'),
       window.puros.provider.list().catch(() => []),
     ])
 
@@ -430,7 +469,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       resumePlaybackOnLaunch: rawResumePlaybackOnLaunch === 'true',
       resumeRewindSeconds: normalizeResumeRewindSeconds(rawResumeRewindSeconds),
       strictSampleRate: rawStrictSampleRate === 'true',
-      showLyricsInNowPlaying: rawShowLyricsInNowPlaying !== 'false',
+      nowPlayingTabs: parseNowPlayingTabs(rawNowPlayingTabs, rawShowLyricsInNowPlaying),
       lyricsApiKeys: {
         musixmatch: typeof rawLyricsMusixmatchApiKey === 'string' ? rawLyricsMusixmatchApiKey : '',
         genius: typeof rawLyricsGeniusApiKey === 'string' ? rawLyricsGeniusApiKey : '',
@@ -439,8 +478,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         ? rawLyricsFontSize
         : 'medium',
       dimAlbumArtWhenLyricsVisible: rawDimAlbumArtWhenLyricsVisible !== 'false',
+      nowPlayingArtworkStyle: rawNowPlayingArtworkStyle === 'flat' ? 'flat' : 'jewelCase',
       showUnavailableSources: rawShowUnavailableSources === 'true',
       groupPlaylistsByProvider: rawGroupPlaylistsByProvider === 'true',
+      seekBarStyle: rawSeekBarStyle === 'waveform' ? 'waveform' : 'bar',
+      showPlayerBadges: rawShowPlayerBadges === 'true',
+      accent: parseAccentSetting(rawAccent),
     })
 
     if (rawLyricsProviderPriority) {
@@ -460,6 +503,22 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const next = { ...get().playerTags, [key]: value }
     set({ playerTags: next })
     await window.puros.settings.set('playerTags', JSON.stringify(next))
+  },
+
+  setShowPlayerBadges: async (enabled) => {
+    set({ showPlayerBadges: enabled })
+    await window.puros.settings.set('showPlayerBadges', enabled ? 'true' : 'false')
+  },
+
+  setSeekBarStyle: async (style) => {
+    const next: SeekBarStyle = style === 'waveform' ? 'waveform' : 'bar'
+    set({ seekBarStyle: next })
+    await window.puros.settings.set('seekBarStyle', next)
+  },
+
+  setAccent: async (accent) => {
+    set({ accent })
+    await window.puros.settings.set('accentColor', JSON.stringify(accent))
   },
 
   setArtistBioSourcePriority: async (priority) => {
@@ -626,9 +685,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     await window.puros.settings.set('strictSampleRate', enabled ? 'true' : 'false')
   },
 
-  setShowLyricsInNowPlaying: async (enabled) => {
-    set({ showLyricsInNowPlaying: enabled })
-    await window.puros.settings.set('lyricsShowInNowPlaying', enabled ? 'true' : 'false')
+  setNowPlayingTabEnabled: async (tab, enabled) => {
+    const next = { ...get().nowPlayingTabs, [tab]: enabled }
+    set({ nowPlayingTabs: next })
+    // Off means off: a detached visualizer window would keep rendering otherwise.
+    if (tab === 'visualizer' && !enabled) void window.puros.app.closeVisualizerWindow()
+    await window.puros.settings.set(NOW_PLAYING_TABS_SETTING_KEY, JSON.stringify(next))
   },
 
   setLyricsProviderPriority: async (priority) => {
@@ -674,6 +736,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setDimAlbumArtWhenLyricsVisible: async (enabled) => {
     set({ dimAlbumArtWhenLyricsVisible: enabled })
     await window.puros.settings.set('lyricsDimAlbumArtWhenVisible', enabled ? 'true' : 'false')
+  },
+
+  setNowPlayingArtworkStyle: async (style) => {
+    const next: NowPlayingArtworkStyle = style === 'flat' ? 'flat' : 'jewelCase'
+    set({ nowPlayingArtworkStyle: next })
+    await window.puros.settings.set('nowPlayingArtworkStyle', next)
   },
 
 }))

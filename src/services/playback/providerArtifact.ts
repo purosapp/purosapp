@@ -1,6 +1,8 @@
 import type { PlaybackArtifactV1, ProviderDescriptorV1 } from '../../provider-api/v1'
 import type { Track } from '../../store/playerStore'
-import { PlaybackPreparationCancelledError, type PreparationIntent, type PreparationOptions } from './types'
+import type { ProviderErrorV1 } from '../../provider-api/v1'
+import { unavailableReasonFromProviderError } from '../../utils/trackAvailability'
+import { PlaybackPreparationCancelledError, TrackUnavailableError, type PreparationIntent, type PreparationOptions } from './types'
 
 export function providerIdForTrack(track: Track): string {
   const providerId = String(track.provider ?? track.sourceType ?? '').trim()
@@ -12,6 +14,11 @@ function sourceIdForTrack(track: Track): string {
   const sourceId = track.sourceId ?? track.streamId
   if (!sourceId) throw new Error('Remote playback requires a source ID')
   return sourceId
+}
+
+function playbackError(error: ProviderErrorV1): Error {
+  const reason = unavailableReasonFromProviderError(error)
+  return reason ? new TrackUnavailableError(reason, error.message) : new Error(error.message)
 }
 
 async function descriptor(providerId: string): Promise<ProviderDescriptorV1> {
@@ -54,7 +61,7 @@ export async function resolveProviderArtifact(
     unsubscribe?.()
   }
   if (options.isCancelled?.()) throw new PlaybackPreparationCancelledError()
-  if (!result.ok) throw new Error(result.error.message)
+  if (!result.ok) throw playbackError(result.error)
   if (result.value == null) return { providerId, artifact: null }
   return { providerId, artifact: result.value as unknown as PlaybackArtifactV1 }
 }
@@ -82,7 +89,7 @@ export function waitForCompletedArtifact(
       } else if (session.state === 'failed' || session.state === 'cancelled') {
         window.clearTimeout(timeout)
         unsubscribe()
-        reject(new Error(session.error?.message ?? `Provider playback session ${session.state}`))
+        reject(session.error ? playbackError(session.error) : new Error(`Provider playback session ${session.state}`))
       }
     })
   })

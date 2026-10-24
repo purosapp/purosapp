@@ -1,9 +1,11 @@
 import fs from 'node:fs'
 import type { AudioPlugin } from '../../../src/types/plugins'
+import type { NativeRestoreConfig, RestoreSourceHint, RestoreStatus } from '../../../src/services/restoreSettings'
 import { extractArtwork } from '../artwork/cache'
 import { stopLiveRadioNativePlayback } from '../liveRadio/nativePlayback'
 import { setPlaybackState } from '../playbackCoordinator'
 import { getAutoEQIndex } from './autoeq'
+import { resolveDsdPcmTarget } from './localPlayback'
 import {
   detectBluetoothInfo,
   resolveListedOutputDevice,
@@ -94,17 +96,35 @@ export async function openSharedAudio(
   return result
 }
 
-export async function playAudioFile(filePath: string, allowResample = false, deemphasis = false, dsdOutputRate = 0) {
+export async function playAudioFile(
+  filePath: string,
+  allowResample = false,
+  deemphasis = false,
+  dsdOutputRate = 0,
+  sourceHint: RestoreSourceHint = 'unknown',
+) {
+  // A DSD file heard as PCM: the engine decodes it with the target's settings.
+  const dsdPcm = resolveDsdPcmTarget(filePath)
+  const sourcePath = dsdPcm?.sourcePath ?? filePath
   // Artwork is read while the engine opens the file, not after: playback start never waits on tag parsing.
-  const artworkTask = extractArtwork(filePath).catch(() => null)
-  const result = await getAudioEngine().playFile(filePath, allowResample, deemphasis, dsdOutputRate)
+  const artworkTask = extractArtwork(sourcePath).catch(() => null)
+  const result = await getAudioEngine().playFile(sourcePath, allowResample, deemphasis, dsdOutputRate, sourceHint,
+    dsdPcm?.options ?? null)
   if (result.success) setPlaybackState('playing')
   const artwork = result.success ? await artworkTask : null
   return { ...result, artwork }
 }
 
-export async function queueNextAudioFile(filePath: string, allowResample = false, deemphasis = false, dsdOutputRate = 0) {
-  return getAudioEngine().queueNextFile(filePath, allowResample, deemphasis, dsdOutputRate)
+export async function queueNextAudioFile(
+  filePath: string,
+  allowResample = false,
+  deemphasis = false,
+  dsdOutputRate = 0,
+  sourceHint: RestoreSourceHint = 'unknown',
+) {
+  const dsdPcm = resolveDsdPcmTarget(filePath)
+  return getAudioEngine().queueNextFile(dsdPcm?.sourcePath ?? filePath, allowResample, deemphasis, dsdOutputRate,
+    sourceHint, dsdPcm?.options ?? null)
 }
 
 export function setAudioResamplerConfig(config: NativeResamplerConfig): void {
@@ -124,10 +144,12 @@ export function getAudioResamplerStatus(): ResamplerStatus {
     return getAudioEngine().getResamplerStatus()
   } catch {
     return {
+      float64: false, sourceBits: 0, sourceFloat: false, outputBits: 0, outputFloat: false,
       resampling: false, engine: null, inputRate: 0, outputRate: 0, ditherBits: 0, dither: 'none',
-      filter: '1x', deemphasis: false, headroomDb: 0, peakDb: -200, clippedSamples: 0,
+      filter: '1x', deemphasis: false, headroomDb: 0, headroomAuto: false, peakDb: -200, clippedSamples: 0,
       firTaps: 0, convolutionTaps: 0, convolutionError: null,
       dsdOutputRate: 0, modulator: null, modulatorOverloads: 0,
+      dsdSourceRate: 0, dsdStages: 0, dsdFilterHz: 0, dsdGainDb: 0,
     }
   }
 }
@@ -323,6 +345,19 @@ export function clearAudioEqProfile(): void {
   try { getAudioEngine().clearEQProfile() } catch {
     // The engine may already be closed during shutdown.
   }
+}
+
+export function setAudioRestoreConfig(config: NativeRestoreConfig): void {
+  getAudioEngine().setRestoreConfig(config)
+}
+
+const IDLE_RESTORE_STATUS: RestoreStatus = {
+  mode: 'off', state: 'off', reason: '', sourceClass: 'unknown', codec: null, position: 'source',
+  cutoffHz: 0, confidence: 0, severity: 0, mix: 0, latencyMs: 0, sampleRate: 0,
+}
+
+export function getAudioRestoreStatus(): RestoreStatus {
+  try { return getAudioEngine().getRestoreStatus() } catch { return IDLE_RESTORE_STATUS }
 }
 
 export function readAudioEqFile(filePath: string): string {

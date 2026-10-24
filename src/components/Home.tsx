@@ -6,6 +6,7 @@ import {
   filterVisibleRecentTracks,
   loadRecentlyPlayed,
   loadRecentlyPlayedPlaylists,
+  openRecentPlaylist,
   type RecentPlayedEntry,
   type RecentPlaylistEntry,
 } from '../services/homeRecents'
@@ -15,18 +16,15 @@ import { usePlayerStore } from '../store/playerStore'
 import { useAppShellStore } from '../store/appShellStore'
 import ProviderBadge from './ProviderBadge'
 import ListeningActivity from './ListeningActivity'
+import { Compass } from 'lucide-react'
+import { useCatalogStore } from '../store/catalogStore'
+import { formatPlayedAt } from '../utils/formatTime'
+import { MediaGrid, MediaTile, useMediaGridColumns } from './MediaTile'
+import TrackList, { type TrackListRow } from './TrackList'
+import { Button, PageHeader, Section, SectionNotice } from './ui'
 
-const COLLAPSED_RECENTS_COUNT = 3
-
-function formatPlayedAt(timestamp: number) {
-  const deltaMs = Date.now() - timestamp
-  const deltaMinutes = Math.max(1, Math.round(deltaMs / 60000))
-  if (deltaMinutes < 60) return `${deltaMinutes} min ago`
-  const deltaHours = Math.round(deltaMinutes / 60)
-  if (deltaHours < 24) return `${deltaHours} hr ago`
-  const deltaDays = Math.round(deltaHours / 24)
-  return `${deltaDays} day${deltaDays === 1 ? '' : 's'} ago`
-}
+/** Collapsed tile shelves show one full row (see useMediaGridColumns); songs a short list. */
+const COLLAPSED_SONG_COUNT = 5
 
 function resolveCover(entry: RecentPlayedEntry) {
   return entry.track.coverUrl ?? entry.track.artworkUrl ?? null
@@ -34,24 +32,6 @@ function resolveCover(entry: RecentPlayedEntry) {
 
 function resolveProvider(entry: RecentPlayedEntry) {
   return entry.track.provider ?? 'local'
-}
-
-function isProviderPlaylistRecent(
-  entry: RecentPlaylistEntry,
-): entry is RecentPlaylistEntry & {
-  entryKind: 'provider-playlist'
-  provider: string
-  sourceType: 'playlist' | 'mix' | 'station'
-  sourceId: string
-  itemId: string
-} {
-  return (
-    entry.entryKind === 'provider-playlist' &&
-    typeof entry.provider === 'string' &&
-    typeof entry.sourceType === 'string' &&
-    typeof entry.sourceId === 'string' &&
-    typeof entry.itemId === 'string'
-  )
 }
 
 type GreetingPeriod = 'morning' | 'afternoon' | 'evening' | 'night'
@@ -115,6 +95,14 @@ function getGreeting(name: string, seedBucket: string) {
   return pool[seedValue % pool.length]
 }
 
+function collectionKindLabel(sourceType: HomeProviderCollectionItem['sourceType']) {
+  return sourceType === 'station' ? 'Station' : sourceType === 'mix' ? 'Mix' : 'Playlist'
+}
+
+function ShowMoreButton({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
+  return <Button variant="ghost" size="sm" label={expanded ? 'Show less' : 'Show more'} onClick={onToggle} />
+}
+
 function ProviderShelfRow({
   shelf,
   onOpenCollection,
@@ -126,67 +114,30 @@ function ProviderShelfRow({
   expanded: boolean
   onToggleExpanded: () => void
 }) {
-  const visibleItems = expanded ? shelf.items : shelf.items.slice(0, COLLAPSED_RECENTS_COUNT)
+  const [gridRef, columns] = useMediaGridColumns()
+  const visibleItems = expanded ? shelf.items : shelf.items.slice(0, columns)
 
   return (
-    <section className="space-y-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <h2 className="text-[11px] uppercase tracking-[0.22em] text-zinc-500">{shelf.title}</h2>
-            <ProviderBadge provider={shelf.provider} compact />
-          </div>
-          {shelf.subtitle ? (
-            <p className="mt-1 text-xs text-zinc-500 max-w-2xl">{shelf.subtitle}</p>
-          ) : null}
-        </div>
-        {shelf.items.length > COLLAPSED_RECENTS_COUNT && (
-          <button
-            onClick={onToggleExpanded}
-            className="shrink-0 text-xs text-zinc-500 hover:text-zinc-200 transition-colors"
-          >
-            {expanded ? 'Show less' : 'Show more'}
-          </button>
-        )}
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+    <Section
+      title={shelf.title}
+      aside={<ProviderBadge provider={shelf.provider} compact />}
+      action={shelf.items.length > columns ? <ShowMoreButton expanded={expanded} onToggle={onToggleExpanded} /> : undefined}
+    >
+      {shelf.subtitle ? <p className="-mt-1 max-w-2xl text-xs text-zinc-500">{shelf.subtitle}</p> : null}
+      <MediaGrid ref={gridRef}>
         {visibleItems.map((item) => (
-          <button
+          <MediaTile
             key={item.id}
-            onClick={() => onOpenCollection(item)}
-            className="w-full text-left flex items-center gap-3 p-3 rounded-2xl border border-white/5 bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/10 transition-colors"
-          >
-            {item.artworkUrl ? (
-              <img
-                src={item.artworkUrl}
-                alt=""
-                className="w-16 h-16 rounded-xl object-cover shrink-0 bg-zinc-900"
-              />
-            ) : (
-              <div className="w-16 h-16 rounded-xl shrink-0 bg-zinc-900 flex items-center justify-center text-zinc-600 text-lg font-semibold">
-                {item.title.charAt(0).toUpperCase()}
-              </div>
-            )}
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <ProviderBadge provider={item.provider} compact />
-                <span className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">
-                  {item.sourceType === 'station' ? 'Station' : item.sourceType === 'mix' ? 'Mix' : 'Playlist'}
-                </span>
-              </div>
-              <p className="mt-2 text-sm text-zinc-100 truncate">{item.title}</p>
-              {item.subtitle ? (
-                <p className="mt-1 text-xs text-zinc-500 line-clamp-2">{item.subtitle}</p>
-              ) : null}
-              {item.trackCount ? (
-                <p className="mt-2 text-[11px] text-zinc-600">{item.trackCount} tracks</p>
-              ) : null}
-            </div>
-          </button>
+            kind="playlist"
+            title={item.title}
+            subtitle={item.trackCount ? `${collectionKindLabel(item.sourceType)} · ${item.trackCount} tracks` : collectionKindLabel(item.sourceType)}
+            artworkSrc={item.artworkUrl}
+            onOpen={() => onOpenCollection(item)}
+            topRight={<ProviderBadge provider={item.provider} compact iconOnly className="border-white/15 bg-black/55 backdrop-blur-md" />}
+          />
         ))}
-      </div>
-    </section>
+      </MediaGrid>
+    </Section>
   )
 }
 
@@ -213,6 +164,7 @@ export default function Home() {
   const openCatalogAlbum = useAppShellStore((s) => s.openCatalogAlbum)
   const openCatalogArtist = useAppShellStore((s) => s.openCatalogArtist)
   const setActiveView = useAppShellStore((s) => s.setActiveView)
+  const playAlbum = useCatalogStore((s) => s.playAlbum)
 
   useEffect(() => {
     const load = async () => {
@@ -293,17 +245,19 @@ export default function Home() {
     })
   }, [visibleRecentEntries])
 
+  const [playlistGridRef, playlistColumns] = useMediaGridColumns()
+  const [albumGridRef, albumColumns] = useMediaGridColumns()
   const visibleRecentPlaylists = useMemo(
-    () => showAllPlaylists ? availableRecentPlaylists : availableRecentPlaylists.slice(0, COLLAPSED_RECENTS_COUNT),
-    [availableRecentPlaylists, showAllPlaylists],
+    () => showAllPlaylists ? availableRecentPlaylists : availableRecentPlaylists.slice(0, playlistColumns),
+    [availableRecentPlaylists, playlistColumns, showAllPlaylists],
   )
   const visibleRecentSongs = useMemo(
-    () => showAllSongs ? visibleRecentEntries : visibleRecentEntries.slice(0, COLLAPSED_RECENTS_COUNT),
+    () => showAllSongs ? visibleRecentEntries : visibleRecentEntries.slice(0, COLLAPSED_SONG_COUNT),
     [visibleRecentEntries, showAllSongs],
   )
   const visibleRecentAlbums = useMemo(
-    () => showAllAlbums ? recentAlbums : recentAlbums.slice(0, COLLAPSED_RECENTS_COUNT),
-    [recentAlbums, showAllAlbums],
+    () => showAllAlbums ? recentAlbums : recentAlbums.slice(0, albumColumns),
+    [albumColumns, recentAlbums, showAllAlbums],
   )
 
   const greeting = useMemo(
@@ -311,233 +265,99 @@ export default function Home() {
     [greetingBucket, homeDisplayName],
   )
 
-  const handleOpenRecentPlaylist = (playlist: RecentPlaylistEntry) => {
-    if (isProviderPlaylistRecent(playlist)) {
-      if (typeof playlist.syncedPlaylistId === 'number') {
-        setActiveView(playlist.syncedPlaylistId)
-        return
-      }
-
-      openProviderCollection({
-        id: playlist.itemId,
-        provider: playlist.provider,
-        sourceType: playlist.sourceType,
-        sourceId: playlist.sourceId,
-        title: playlist.name,
-        subtitle: playlist.subtitle ?? null,
-        artworkUrl: playlist.artworkUrl ?? null,
-        providerUrl: playlist.providerUrl ?? null,
-        trackCount: playlist.trackCount ?? null,
-        syncedPlaylistId: playlist.syncedPlaylistId ?? null,
-      })
-      return
-    }
-
-    if (typeof playlist.playlistId === 'number') {
-      setActiveView(playlist.playlistId)
-    }
-  }
-
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
-      <div className="max-w-6xl mx-auto px-6 py-8 space-y-10">
-        <section className="rounded-[28px] border border-white/5 bg-gradient-to-br from-white/[0.06] via-white/[0.03] to-transparent p-8">
-          <p className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">Home</p>
-          <h1 className="mt-3 text-4xl font-semibold text-zinc-100">{greeting}</h1>
-          <p className="mt-3 max-w-2xl text-sm text-zinc-400">
-            Pick up where you left off, jump back into recently played music, or head into Explore to browse your whole library and connected providers.
-          </p>
-          <div className="mt-6 flex flex-wrap gap-3">
-            <button
-              onClick={() => setActiveView('explore')}
-              className="px-4 py-2 rounded-xl bg-white text-zinc-950 text-sm font-medium hover:bg-zinc-200 transition-colors"
-            >
-              Open Explore
-            </button>
-          </div>
-        </section>
-
-        <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-[11px] uppercase tracking-[0.22em] text-zinc-500">Recently Played Playlists</h2>
-            {availableRecentPlaylists.length > COLLAPSED_RECENTS_COUNT && (
-              <button
-                onClick={() => setShowAllPlaylists((value) => !value)}
-                className="text-xs text-zinc-500 hover:text-zinc-200 transition-colors"
-              >
-                {showAllPlaylists ? 'Show less' : 'Show more'}
-              </button>
-            )}
-          </div>
+      <PageHeader
+        kicker="Home"
+        title={greeting}
+        subtitle="Pick up where you left off, or head into Explore to browse your library and connected providers."
+        actions={<Button icon={Compass} label="Explore" onClick={() => setActiveView('explore')} />}
+      />
+      <div className="px-6 pb-6 space-y-10">
+        <Section
+          title="Recently Played Playlists"
+          action={availableRecentPlaylists.length > playlistColumns
+            ? <ShowMoreButton expanded={showAllPlaylists} onToggle={() => setShowAllPlaylists((value) => !value)} />
+            : undefined}
+        >
           {availableRecentPlaylists.length === 0 ? (
-            <div className="rounded-2xl border border-white/5 bg-white/[0.03] p-5 text-sm text-zinc-500">
-              Open or play a playlist and it will appear here.
-            </div>
+            <SectionNotice>Open or play a playlist and it will appear here.</SectionNotice>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            <MediaGrid ref={playlistGridRef}>
               {visibleRecentPlaylists.map((playlist) => (
-                <button
+                <MediaTile
                   key={`${playlist.entryKind ?? 'local-playlist'}:${playlist.playlistId ?? playlist.itemId ?? playlist.name}:${playlist.playedAt}`}
-                  onClick={() => handleOpenRecentPlaylist(playlist)}
-                  className="text-left flex items-center gap-3 p-3 rounded-2xl border border-white/5 bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/10 transition-colors"
-                >
-                  {playlist.artworkUrl ? (
-                    <img
-                      src={playlist.artworkUrl}
-                      alt=""
-                      className="w-16 h-16 rounded-xl object-cover shrink-0 bg-zinc-900"
-                    />
-                  ) : (
-                    <div className="w-16 h-16 rounded-xl shrink-0 bg-zinc-900 flex items-center justify-center text-zinc-600 text-lg font-semibold">
-                      {playlist.name.charAt(0).toUpperCase()}
-                    </div>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm text-zinc-100 truncate">{playlist.name}</p>
-                    <div className="mt-1.5 flex items-center gap-2">
-                      <ProviderBadge provider={playlist.source || 'local'} compact />
-                      <span className="text-[11px] text-zinc-500">{playlist.trackCount} tracks</span>
-                    </div>
-                    <p className="text-[11px] text-zinc-600 mt-2">{formatPlayedAt(playlist.playedAt)}</p>
-                  </div>
-                </button>
+                  kind="playlist"
+                  title={playlist.name}
+                  subtitle={`${playlist.trackCount} tracks · ${formatPlayedAt(playlist.playedAt)}`}
+                  artworkSrc={playlist.artworkUrl}
+                  onOpen={() => openRecentPlaylist(playlist)}
+                  topRight={<ProviderBadge provider={playlist.source || 'local'} compact iconOnly className="border-white/15 bg-black/55 backdrop-blur-md" />}
+                />
               ))}
-            </div>
+            </MediaGrid>
           )}
-        </section>
+        </Section>
 
-        <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-[11px] uppercase tracking-[0.22em] text-zinc-500">Recently Played Songs</h2>
-            {visibleRecentEntries.length > COLLAPSED_RECENTS_COUNT && (
-              <button
-                onClick={() => setShowAllSongs((value) => !value)}
-                className="text-xs text-zinc-500 hover:text-zinc-200 transition-colors"
-              >
-                {showAllSongs ? 'Show less' : 'Show more'}
-              </button>
-            )}
-          </div>
+        <Section
+          title="Recently Played Songs"
+          action={visibleRecentEntries.length > COLLAPSED_SONG_COUNT
+            ? <ShowMoreButton expanded={showAllSongs} onToggle={() => setShowAllSongs((value) => !value)} />
+            : undefined}
+        >
           {visibleRecentEntries.length === 0 ? (
-            <div className="rounded-2xl border border-white/5 bg-white/[0.03] p-5 text-sm text-zinc-500">
-              Start playing music and your recent tracks will appear here.
-            </div>
+            <SectionNotice>Start playing music and your recent tracks will appear here.</SectionNotice>
           ) : (
-            <div className="rounded-2xl border border-white/5 overflow-hidden">
-              <table className="w-full">
-                <thead className="bg-white/[0.03]">
-                  <tr className="text-[11px] uppercase tracking-wider text-zinc-500">
-                    <th className="text-left px-4 py-3 font-medium">Title</th>
-                    <th className="text-left px-4 py-3 font-medium hidden md:table-cell">Artist</th>
-                    <th className="text-right px-4 py-3 font-medium">Played</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleRecentSongs.map((entry) => (
-                    <tr
-                      key={`${entry.track.id}:${entry.playedAt}`}
-                      onClick={() => setQueue([entry.track], 0)}
-                      className="border-t border-white/[0.04] hover:bg-white/[0.04] cursor-pointer transition-colors"
-                    >
-                      <td className="px-4 py-3">
-                        <div className="min-w-0">
-                          <p className="text-sm text-zinc-100 truncate">{entry.track.title}</p>
-                          <div className="flex items-center gap-2 mt-1 min-w-0">
-                            <ProviderBadge provider={resolveProvider(entry)} compact className="shrink-0" />
-                            {entry.track.catalogAlbumId ? (
-                              <button
-                                className="text-xs text-zinc-500 hover:text-zinc-300 truncate transition-colors"
-                                onClick={(event) => {
-                                  event.stopPropagation()
-                                  void openCatalogAlbum(entry.track.catalogAlbumId!)
-                                }}
-                              >
-                                {entry.track.album}
-                              </button>
-                            ) : (
-                              <p className="text-xs text-zinc-500 truncate">{entry.track.album}</p>
-                            )}
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 hidden md:table-cell">
-                        {entry.track.catalogArtistId ? (
-                          <button
-                            className="text-sm text-zinc-300 hover:text-white transition-colors"
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              void openCatalogArtist(entry.track.catalogArtistId!)
-                            }}
-                          >
-                            {entry.track.artist}
-                          </button>
-                        ) : (
-                          <span className="text-sm text-zinc-400">{entry.track.artist}</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-right text-xs text-zinc-500">
-                        {formatPlayedAt(entry.playedAt)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <TrackList
+              rows={visibleRecentSongs.map((entry, index): TrackListRow => ({
+                key: `${entry.track.id}:${entry.playedAt}`,
+                number: index + 1,
+                title: entry.track.title,
+                artworkSrc: resolveCover(entry),
+                artist: entry.track.artist,
+                onOpenArtist: entry.track.catalogArtistId ? () => { void openCatalogArtist(entry.track.catalogArtistId!) } : undefined,
+                album: entry.track.album || null,
+                onOpenAlbum: entry.track.catalogAlbumId ? () => { void openCatalogAlbum(entry.track.catalogAlbumId!) } : undefined,
+                meta: <ProviderBadge provider={resolveProvider(entry)} compact iconOnly className="border-white/10 bg-white/[0.05]" />,
+                trailing: formatPlayedAt(entry.playedAt),
+                active: entry.track.id === currentTrackId,
+              }))}
+              trailingLabel="Played"
+              onPlay={(index) => {
+                const entry = visibleRecentSongs[index]
+                if (entry) setQueue([entry.track], 0)
+              }}
+            />
           )}
-        </section>
+        </Section>
 
-        <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-[11px] uppercase tracking-[0.22em] text-zinc-500">Recently Played Albums</h2>
-            {recentAlbums.length > COLLAPSED_RECENTS_COUNT && (
-              <button
-                onClick={() => setShowAllAlbums((value) => !value)}
-                className="text-xs text-zinc-500 hover:text-zinc-200 transition-colors"
-              >
-                {showAllAlbums ? 'Show less' : 'Show more'}
-              </button>
-            )}
-          </div>
+        <Section
+          title="Recently Played Albums"
+          action={recentAlbums.length > albumColumns
+            ? <ShowMoreButton expanded={showAllAlbums} onToggle={() => setShowAllAlbums((value) => !value)} />
+            : undefined}
+        >
           {recentAlbums.length === 0 ? (
-            <div className="rounded-2xl border border-white/5 bg-white/[0.03] p-5 text-sm text-zinc-500">
-              Album history will appear here once you start listening.
-            </div>
+            <SectionNotice>Album history will appear here once you start listening.</SectionNotice>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            <MediaGrid ref={albumGridRef}>
               {visibleRecentAlbums.map((entry) => (
-                <button
+                <MediaTile
                   key={`${resolveProvider(entry)}:${entry.track.catalogAlbumId ?? `${entry.track.album}:${entry.playedAt}`}`}
-                  onClick={() => {
-                    if (entry.track.catalogAlbumId) {
-                      void openCatalogAlbum(entry.track.catalogAlbumId)
-                    }
+                  kind="album"
+                  title={entry.track.album}
+                  subtitle={entry.track.artist}
+                  artworkSrc={resolveCover(entry)}
+                  onOpen={() => {
+                    if (entry.track.catalogAlbumId) void openCatalogAlbum(entry.track.catalogAlbumId)
                   }}
-                  className="text-left flex items-center gap-3 p-3 rounded-2xl border border-white/5 bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/10 transition-colors"
-                >
-                  {resolveCover(entry) ? (
-                    <img
-                      src={resolveCover(entry)!}
-                      alt=""
-                      className="w-16 h-16 rounded-xl object-cover shrink-0 bg-zinc-900"
-                    />
-                  ) : (
-                    <div className="w-16 h-16 rounded-xl shrink-0 bg-zinc-900 flex items-center justify-center text-zinc-600 text-lg font-semibold">
-                      {entry.track.album.charAt(0).toUpperCase()}
-                    </div>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm text-zinc-100 truncate">{entry.track.album}</p>
-                    <div className="mt-1.5 flex items-center gap-2 min-w-0">
-                      <ProviderBadge provider={resolveProvider(entry)} compact className="shrink-0" />
-                      <span className="text-xs text-zinc-500 truncate">{entry.track.artist}</span>
-                    </div>
-                    <p className="text-[11px] text-zinc-600 mt-2">{formatPlayedAt(entry.playedAt)}</p>
-                  </div>
-                </button>
+                  onPlay={entry.track.catalogAlbumId ? () => { void playAlbum(entry.track.catalogAlbumId!) } : undefined}
+                  topRight={<ProviderBadge provider={resolveProvider(entry)} compact iconOnly className="border-white/15 bg-black/55 backdrop-blur-md" />}
+                />
               ))}
-            </div>
+            </MediaGrid>
           )}
-        </section>
+        </Section>
 
         {providerShelves.map((shelf) => (
           <ProviderShelfRow

@@ -6,6 +6,8 @@ import type { CatalogGenreSummary, CatalogArtistSummary } from '../services/cata
 import { useAppShellStore } from '../store/appShellStore'
 import { artworkUrl } from '../utils/artworkUrl'
 import { ArtistCard } from './ArtistsView'
+import { MediaGrid, MediaGridSkeleton } from './MediaTile'
+import { Button, PageHeader, PageStatus, SearchField } from './ui'
 
 const rememberedGenres = new Map<string, string | null>()
 
@@ -98,32 +100,31 @@ export default function GenresView() {
   if (selected) {
     return (
       <div className="flex-1 flex flex-col min-h-0">
-        <div className="flex items-center gap-3 px-6 pt-6 pb-3 shrink-0">
-          <button
-            onClick={() => { rememberedGenres.set(providerId, null); setSelected(null); setArtists([]) }}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm text-zinc-400 border border-white/10 hover:text-zinc-200 hover:bg-white/5 transition-colors"
-          >
-            <ChevronLeft className="w-3.5 h-3.5" />
-            Genres
-          </button>
-          <div className="min-w-0">
-            <h1 className="text-xl font-semibold text-zinc-100 capitalize truncate">{selected}</h1>
-            <p className="text-xs text-zinc-500 mt-0.5">
-              {artistsLoading ? 'Loading…' : `${artists.length} ${artists.length === 1 ? 'artist' : 'artists'}`}
-            </p>
-          </div>
-        </div>
+        <PageHeader
+          kicker="Genre"
+          title={<span className="capitalize">{selected}</span>}
+          subtitle={artistsLoading ? 'Loading…' : `${artists.length} ${artists.length === 1 ? 'artist' : 'artists'}`}
+          leading={(
+            <Button
+              iconOnly
+              icon={ChevronLeft}
+              label="Back to genres"
+              className="mb-1"
+              onClick={() => { rememberedGenres.set(providerId, null); setSelected(null); setArtists([]) }}
+            />
+          )}
+        />
         {artistsLoading && artists.length === 0 ? (
-          <div className="flex-1 flex items-center justify-center">
-            <p className="text-sm text-zinc-500">Loading…</p>
+          <div className="flex-1 overflow-y-auto px-6 pb-6">
+            <MediaGridSkeleton count={12} kind="artist" />
           </div>
         ) : (
           <div className="flex-1 overflow-y-auto px-6 pb-6">
-            <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-4 gap-y-6">
+            <MediaGrid>
               {artists.map((artist) => (
                 <ArtistCard key={artist.id} artist={artist} onOpen={() => { void openArtist(artist) }} />
               ))}
-            </div>
+            </MediaGrid>
           </div>
         )}
       </div>
@@ -133,37 +134,24 @@ export default function GenresView() {
   // ── Genre list ──
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <div className="flex items-center justify-between gap-4 px-6 pt-6 pb-3 shrink-0">
-        <div>
-          <h1 className="text-xl font-semibold text-zinc-100">Genres</h1>
-          <p className="text-xs text-zinc-500 mt-0.5">
-            {isLoading ? 'Loading…' : `${genres.length} ${genres.length === 1 ? 'genre' : 'genres'} in this provider`}
-          </p>
-        </div>
-        <input
-          type="text"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter genres"
-          className="w-44 px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-white/20"
-        />
-      </div>
+      <PageHeader
+        kicker="Library"
+        title="Genres"
+        subtitle={isLoading ? 'Loading…' : `${genres.length} ${genres.length === 1 ? 'genre' : 'genres'} in this provider`}
+        actions={<SearchField value={filter} onChange={setFilter} placeholder="Filter genres" />}
+      />
 
       {isLoading && genres.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center">
-          <p className="text-sm text-zinc-500">Loading…</p>
-        </div>
+        <PageStatus fill loading />
       ) : visibleGenres.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center px-6">
-          <p className="text-sm text-zinc-500 text-center">
-            {filter.trim()
-              ? `No genres match “${filter.trim()}”.`
-              : 'No genres yet. Genre tags come from this provider’s library.'}
-          </p>
-        </div>
+        <PageStatus
+          fill
+          title={filter.trim() ? `No genres match “${filter.trim()}”.` : 'No genres yet.'}
+          hint={filter.trim() ? undefined : 'Genre tags come from this provider’s library.'}
+        />
       ) : (
         <div className="flex-1 overflow-y-auto px-6 pb-6">
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(13rem,1fr))] gap-4">
             {visibleGenres.map((genre) => (
               <GenreCard key={genre.genre} genre={genre} onClick={() => { void openGenre(genre.genre) }} />
             ))}

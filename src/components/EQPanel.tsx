@@ -1,10 +1,21 @@
-import { ArrowDown, ArrowUp, SlidersVertical, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, FolderOpen, RefreshCw, SlidersVertical, X } from 'lucide-react'
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { GlassPopover } from './GlassPanel'
 import { CROSSFEED_LIMITS, useDSPStore } from '../store/dspStore'
 import { parseAutoEQ } from '../services/autoeq/AutoEQParser'
 import ParametricEQPanel from './ParametricEQPanel'
 import { getJsonSetting, getStringSetting, setJsonSetting, setStringSetting } from '../utils/appSettings'
 import type { AudioPluginParameter, InstalledAudioPlugin } from '../types/plugins'
+import {
+  DEFAULT_RESTORE_SETTINGS,
+  type RestoreMode,
+  type RestorePosition,
+  type RestoreProfile,
+  type RestoreStatus,
+} from '../services/restoreSettings'
+import { Button, FIELD_SM_CLASS, SearchField } from './ui'
+import { Segmented, Switch } from './settings/controls'
+import { isWindowHidden } from '../services/windowActivity'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,7 +64,7 @@ function ProfileInfo({ name, bands, preampGain }: {
   preampGain: number
 }) {
   return (
-    <div className="bg-zinc-800/50 rounded-md p-2 space-y-1">
+    <div className="bg-white/[0.03] rounded-xl p-2 space-y-1">
       <p className="text-xs text-zinc-200 font-medium truncate">{name}</p>
       <p className="text-[10px] text-zinc-500 font-mono">
         {bands.length} bands · preamp {preampGain > 0 ? '+' : ''}{preampGain.toFixed(1)} dB
@@ -92,7 +103,7 @@ function ResultRow({ name, source, applying, onApply }: {
     <button
       onClick={onApply}
       disabled={applying}
-      className="w-full text-left px-2 py-1.5 rounded hover:bg-zinc-800 transition-colors group"
+      className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-white/5 transition-colors group"
     >
       <p className="text-xs text-zinc-200 group-hover:text-white truncate">
         {applying ? <span className="text-zinc-500">Loading…</span> : name}
@@ -171,7 +182,7 @@ function BrowseTab({ onApply }: { onApply: (name: string, source: string, url: s
   if (indexState === 'loading') {
     return (
       <div className="flex flex-col items-center justify-center py-8 gap-2">
-        <div className="w-4 h-4 border-2 border-zinc-600 border-t-zinc-300 rounded-full animate-spin" />
+        <div className="w-4 h-4 border-2 border-white/15 border-t-zinc-300 rounded-full animate-spin" />
         <p className="text-[10px] text-zinc-500">Loading preset library…</p>
       </div>
     )
@@ -185,12 +196,13 @@ function BrowseTab({ onApply }: { onApply: (name: string, source: string, url: s
 
   return (
     <div className="space-y-2">
-      <input
+      <SearchField
         ref={inputRef}
+        size="sm"
         value={query}
-        onChange={e => setQuery(e.target.value)}
+        onChange={setQuery}
         placeholder={`Search ${allEntries.length.toLocaleString()} presets…`}
-        className="w-full bg-zinc-800 text-zinc-200 text-xs font-mono px-3 py-2 rounded-md outline-none focus:ring-1 focus:ring-zinc-600 placeholder-zinc-600"
+        className="w-full"
       />
       {applyError && <p className="text-[10px] text-red-400 px-1">{applyError}</p>}
       {showRecent && (
@@ -235,7 +247,10 @@ function FileTab({ onApply }: { onApply: (text: string, name: string) => Promise
       <p className="text-[10px] text-zinc-500 leading-relaxed">
         Load an <span className="text-zinc-400">AutoEQ ParametricEQ.txt</span> file exported from the AutoEQ website or GitHub repository.
       </p>
-      <button
+      <Button
+        variant="secondary"
+        size="sm"
+        label={loading ? 'Opening…' : 'Choose file…'}
         onClick={async () => {
           setLoading(true)
           const text = await window.puros.dsp.loadEQFile()
@@ -243,10 +258,8 @@ function FileTab({ onApply }: { onApply: (text: string, name: string) => Promise
           if (text) await onApply(text, 'Custom')
         }}
         disabled={loading}
-        className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-md text-xs text-zinc-300 hover:bg-zinc-700 transition-colors disabled:opacity-50"
-      >
-        {loading ? 'Opening…' : 'Choose file…'}
-      </button>
+        className="w-full"
+      />
     </div>
   )
 }
@@ -316,50 +329,34 @@ function AutoEQTab() {
       {/* Header + toggle */}
       <div className="flex items-center justify-between">
         <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-mono">AutoEQ</span>
-        <button
-          onClick={handleToggle}
+        <Switch
+          checked={eqEnabled}
+          onChange={() => handleToggle()}
           disabled={!activeProfile}
+          label="AutoEQ"
           title={!activeProfile ? 'Load a preset first' : eqEnabled ? 'Disable AutoEQ' : 'Enable AutoEQ'}
-          className={`relative w-9 h-5 rounded-full transition-colors ${
-            eqEnabled ? 'bg-purple-600' : 'bg-zinc-700'
-          } ${!activeProfile ? 'opacity-50 cursor-not-allowed' : ''}`}
-        >
-          <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all duration-200 ${
-            eqEnabled ? 'left-4.5' : 'left-0.5'
-          }`} />
-        </button>
+        />
       </div>
 
       {/* Active profile */}
       {activeProfile && (
         <div className="space-y-1">
           <ProfileInfo name={activeProfile.name} bands={activeProfile.bands} preampGain={activeProfile.preampGain} />
-          <button
-            onClick={handleClear}
-            className="text-[10px] text-zinc-600 hover:text-red-400 transition-colors px-1"
-          >
-            Remove profile
-          </button>
+          <Button variant="ghost" size="xs" icon={X} label="Remove profile" onClick={handleClear} />
         </div>
       )}
 
       {parseError && <p className="text-[10px] text-red-400 px-1">{parseError}</p>}
 
       {/* Sub-tabs */}
-      <div className="flex rounded-md overflow-hidden border border-zinc-700 text-xs">
-        <button
-          onClick={() => setSubTab('browse')}
-          className={`flex-1 py-1.5 transition-colors ${
-            subTab === 'browse' ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'
-          }`}
-        >Browse library</button>
-        <button
-          onClick={() => setSubTab('file')}
-          className={`flex-1 py-1.5 transition-colors ${
-            subTab === 'file' ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'
-          }`}
-        >Import from file</button>
-      </div>
+      <Segmented
+        value={subTab}
+        onChange={setSubTab}
+        options={[
+          { id: 'browse', label: 'Browse library' },
+          { id: 'file', label: 'Import from file' },
+        ]}
+      />
 
       {subTab === 'browse'
         ? <BrowseTab onApply={handleBrowseApply} />
@@ -416,20 +413,15 @@ function CrossfeedTab() {
             Reduces low-frequency channel separation for a more speaker-like stereo image while preserving mono content and top-end width.
           </p>
         </div>
-        <button
-          onClick={() => void setCrossfeedEnabled(!crossfeedEnabled)}
-          className={`relative w-9 h-5 rounded-full transition-colors ${
-            crossfeedEnabled ? 'bg-amber-500' : 'bg-zinc-700'
-          }`}
+        <Switch
+          checked={crossfeedEnabled}
+          onChange={(value) => void setCrossfeedEnabled(value)}
+          label="Crossfeed"
           title={crossfeedEnabled ? 'Disable Crossfeed' : 'Enable Crossfeed'}
-        >
-          <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all duration-200 ${
-            crossfeedEnabled ? 'left-4.5' : 'left-0.5'
-          }`} />
-        </button>
+        />
       </div>
 
-      <div className="rounded-lg border border-zinc-800 bg-zinc-900/70 p-3 space-y-4">
+      <div className="rounded-xl border border-white/5 bg-white/[0.03] p-3 space-y-4">
         <div className="space-y-2">
           <div className="flex items-baseline justify-between gap-3">
             <div>
@@ -450,7 +442,7 @@ function CrossfeedTab() {
                     e.currentTarget.blur()
                   }
                 }}
-                className="w-22 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-right text-xs font-mono text-amber-300 outline-none focus:border-amber-400"
+                className={`${FIELD_SM_CLASS} w-22 text-right font-mono`}
               />
               <span className="text-[10px] uppercase tracking-wider text-zinc-500">Hz</span>
             </div>
@@ -466,7 +458,7 @@ function CrossfeedTab() {
               setCutoffDraft(String(Math.round(nextValue)))
               void setCrossfeedCutoffFrequency(nextValue)
             }}
-            className="w-full accent-amber-400"
+            className="w-full accent-white"
           />
         </div>
 
@@ -490,7 +482,7 @@ function CrossfeedTab() {
                     e.currentTarget.blur()
                   }
                 }}
-                className="w-22 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-right text-xs font-mono text-amber-300 outline-none focus:border-amber-400"
+                className={`${FIELD_SM_CLASS} w-22 text-right font-mono`}
               />
               <span className="text-[10px] uppercase tracking-wider text-zinc-500">dB</span>
             </div>
@@ -506,7 +498,7 @@ function CrossfeedTab() {
               setFeedLevelDraft(nextValue.toFixed(1))
               void setCrossfeedFeedLevelDb(nextValue)
             }}
-            className="w-full accent-amber-400"
+            className="w-full accent-white"
           />
         </div>
       </div>
@@ -552,13 +544,12 @@ function PluginParameterPanel({ index }: { index: number }) {
   }
 
   return (
-    <div className="mt-2 space-y-2 rounded border border-zinc-700 bg-zinc-900 p-2">
+    <div className="mt-2 space-y-2 rounded-xl border border-white/10 bg-white/[0.03] p-2">
       <p className="text-[10px] text-zinc-400">Plug-in parameters</p>
       {loading ? <p className="text-xs text-zinc-500">Loading parameters…</p> : parameters.length === 0 ?
         <p className="text-xs text-zinc-500">This plug-in does not expose editable parameters.</p> : <>
-          <input value={query} onChange={(event) => setQuery(event.target.value)}
-            placeholder="Find a parameter…" aria-label="Find plug-in parameter"
-            className="w-full rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-200 outline-none" />
+          <SearchField size="sm" value={query} onChange={setQuery}
+            placeholder="Find a parameter…" aria-label="Find plug-in parameter" className="w-full" />
           <div className="max-h-52 space-y-2 overflow-y-auto">
             {visible.slice(0, 80).map((parameter) => (
               <label key={parameter.id} className="block text-[10px] text-zinc-300">
@@ -567,7 +558,7 @@ function PluginParameterPanel({ index }: { index: number }) {
                   <span className="shrink-0 font-mono text-zinc-500">{parameter.display}</span>
                 </span>
                 <input type="range" min="0" max="1" step="0.001" value={parameter.value}
-                  className="w-full accent-purple-500"
+                  className="w-full accent-white"
                   onChange={(event) => {
                     const value = Number(event.target.value)
                     setParameters((current) => current.map((item) => item.id === parameter.id ? {
@@ -667,16 +658,12 @@ function PluginsTab() {
           <p className="text-xs font-medium text-zinc-200">Installed VST effects</p>
           <p className="text-[10px] text-zinc-500">After EQ and crossfeed · top to bottom · stereo PCM</p>
         </div>
-        <button disabled={loadingInstalled} onClick={() => void refresh()}
-          className="text-[10px] text-zinc-400 hover:text-zinc-200 disabled:opacity-50">
-          Refresh
-        </button>
+        <Button variant="ghost" size="xs" icon={RefreshCw} label="Refresh" disabled={loadingInstalled} onClick={() => void refresh()} />
       </div>
-      <input value={query} onChange={(event) => setQuery(event.target.value)}
+      <SearchField size="sm" value={query} onChange={setQuery}
         placeholder="Search installed plug-ins…"
-        aria-label="Search installed VST plug-ins"
-        className="w-full rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 outline-none placeholder:text-zinc-500 focus:ring-1 focus:ring-purple-500" />
-      <div className="max-h-44 overflow-y-auto rounded border border-zinc-800">
+        aria-label="Search installed VST plug-ins" className="w-full" />
+      <div className="max-h-44 overflow-y-auto rounded-xl border border-white/5">
         {loadingInstalled ? <p className="p-2 text-xs text-zinc-500">Scanning installed plug-ins…</p> :
           visibleInstalled.length === 0 ? <p className="p-2 text-xs text-zinc-500">
             {installed.length === 0 ? 'No installed VST plug-ins found.' : 'No matching plug-ins.'}
@@ -684,63 +671,50 @@ function PluginsTab() {
             <button key={plugin.path} disabled={busy || plugins.length >= 16}
               onClick={() => void addInstalled(plugin.path)}
               title={plugin.path}
-              className="flex w-full items-center gap-2 border-b border-zinc-800 px-2 py-1.5 text-left hover:bg-zinc-800 disabled:opacity-50 last:border-b-0">
+              className="flex w-full items-center gap-2 border-b border-white/5 px-2 py-1.5 text-left hover:bg-white/5 disabled:opacity-50 last:border-b-0">
               <span className="min-w-0 flex-1 truncate text-xs text-zinc-200">{plugin.name}</span>
               <span className="text-[10px] text-zinc-500">{plugin.format}</span>
-              <span className="text-xs text-purple-400">+</span>
+              <span className="text-xs text-accent-400">+</span>
             </button>
           ))}
       </div>
       <div className="flex items-center justify-between">
         <p className="text-[10px] text-zinc-500">{installed.length} installed · {plugins.length}/16 in stack</p>
-        <button disabled={busy || plugins.length >= 16} onClick={() => void addFile()}
-          className="text-[10px] text-zinc-400 hover:text-zinc-200 disabled:opacity-50">
-          Choose file…
-        </button>
+        <Button variant="ghost" size="xs" icon={FolderOpen} label="Choose file…" disabled={busy || plugins.length >= 16} onClick={() => void addFile()} />
       </div>
-      <div className="flex items-baseline justify-between border-t border-zinc-800 pt-2">
+      <div className="flex items-baseline justify-between border-t border-white/5 pt-2">
         <p className="text-[10px] uppercase tracking-wider text-zinc-500">Effect stack</p>
         {plugins.length > 1 && <p className="text-[10px] text-zinc-600">Processed top to bottom · 1 runs first</p>}
       </div>
       {plugins.length === 0 && <p className="text-xs text-zinc-500">No plug-ins in the stack.</p>}
       {plugins.map((plugin, index) => (
-        <div key={`${plugin.path}-${index}`} className="rounded bg-zinc-800/60 p-2">
+        <div key={`${plugin.path}-${index}`} className="rounded-xl bg-white/[0.03] p-2">
           <div className="flex items-center gap-2">
           <span className="w-4 shrink-0 text-right font-mono text-xs tabular-nums text-zinc-500">{index + 1}.</span>
-          <button type="button" role="switch" aria-checked={plugin.enabled} disabled={busy}
-            aria-label={`Enable ${plugin.name}`}
+          <Switch
+            checked={plugin.enabled}
+            disabled={busy}
+            label={`Enable ${plugin.name}`}
             title={plugin.enabled ? `Disable ${plugin.name}` : `Enable ${plugin.name}`}
-            onClick={() => void update(plugins.map((item, i) => i === index ? { ...item, enabled: !item.enabled } : item))}
-            className={`relative w-9 h-5 shrink-0 rounded-full transition-colors ${
-              plugin.enabled ? 'bg-purple-600' : 'bg-zinc-700'
-            } ${busy ? 'opacity-50 cursor-not-allowed' : ''}`}>
-            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all duration-200 ${
-              plugin.enabled ? 'left-4.5' : 'left-0.5'
-            }`} />
-          </button>
+            onChange={() => void update(plugins.map((item, i) => i === index ? { ...item, enabled: !item.enabled } : item))}
+          />
           <div className="min-w-0 flex-1">
             <p className={`truncate text-xs ${plugin.enabled ? 'text-zinc-200' : 'text-zinc-400'}`}>{plugin.name}</p>
             <p className="truncate text-[10px] text-zinc-500" title={plugin.path}>{plugin.path}</p>
           </div>
-          <button disabled={busy} title={`Open ${plugin.name} parameters`}
-            className="text-[10px] text-purple-300 hover:text-purple-200 disabled:opacity-50"
-            onClick={() => setOpenIndex(openIndex === index ? null : index)}>
-            {openIndex === index ? 'Close' : 'Params'}
-          </button>
-          <button disabled={busy || !plugin.enabled} title={plugin.enabled
+          <Button variant="ghost" size="xs" label={openIndex === index ? 'Close' : 'Params'} title={`Open ${plugin.name} parameters`}
+            disabled={busy} active={openIndex === index} onClick={() => setOpenIndex(openIndex === index ? null : index)} />
+          <Button variant="ghost" size="xs" label="GUI" disabled={busy || !plugin.enabled} title={plugin.enabled
             ? `Open ${plugin.name} plug-in window during PCM playback`
             : `Enable ${plugin.name} to open its plug-in window`}
-            className="text-[10px] text-purple-300 hover:text-purple-200 disabled:opacity-50"
             onClick={() => void window.puros.dsp.openPluginEditor(index).catch((reason) =>
-              setError(reason instanceof Error ? reason.message : String(reason)))}>
-            GUI
-          </button>
-          <button disabled={busy || index === 0} title="Move up" className="text-xs text-zinc-400 disabled:opacity-30"
-            onClick={() => { setOpenIndex(null); const next = [...plugins]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; void update(next) }}><ArrowUp className="w-3 h-3" /></button>
-          <button disabled={busy || index === plugins.length - 1} title="Move down" className="text-xs text-zinc-400 disabled:opacity-30"
-            onClick={() => { setOpenIndex(null); const next = [...plugins]; [next[index + 1], next[index]] = [next[index], next[index + 1]]; void update(next) }}><ArrowDown className="w-3 h-3" /></button>
-          <button disabled={busy} title="Remove" className="text-xs text-red-400 disabled:opacity-30"
-            onClick={() => { setOpenIndex(null); void update(plugins.filter((_, i) => i !== index)) }}><X className="w-3 h-3" /></button>
+              setError(reason instanceof Error ? reason.message : String(reason)))} />
+          <Button variant="ghost" size="xs" iconOnly icon={ArrowUp} label="Move up" disabled={busy || index === 0}
+            onClick={() => { setOpenIndex(null); const next = [...plugins]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; void update(next) }} />
+          <Button variant="ghost" size="xs" iconOnly icon={ArrowDown} label="Move down" disabled={busy || index === plugins.length - 1}
+            onClick={() => { setOpenIndex(null); const next = [...plugins]; [next[index + 1], next[index]] = [next[index], next[index + 1]]; void update(next) }} />
+          <Button variant="ghost" size="xs" iconOnly icon={X} label="Remove" disabled={busy} className="hover:!text-red-300"
+            onClick={() => { setOpenIndex(null); void update(plugins.filter((_, i) => i !== index)) }} />
           </div>
           {openIndex === index && <PluginParameterPanel index={index} />}
         </div>
@@ -755,22 +729,233 @@ function PluginsTab() {
 // Root EQPanel (trigger button + popup with top-level tabs)
 // ---------------------------------------------------------------------------
 
-type TopTab = 'autoeq' | 'peq' | 'crossfeed' | 'plugins'
+const RESTORE_MODE_HELP: Record<RestoreMode, string> = {
+  off: 'Disabled. Audio passes through untouched.',
+  manual: 'Restores every PCM source, lossless included. Native DSD is never processed.',
+  auto: 'Restores only sources the decoder confirms as lossy (MP3, AAC, Opus, Vorbis…). Lossless, DSD and unidentified formats stay untouched and bit-perfect.',
+}
+
+const RESTORE_PROFILE_HELP: Record<RestoreProfile, string> = {
+  adaptive: 'Follows the measured coding damage: more on low bitrates, almost nothing on transparent encodes.',
+  natural: 'Restrained and smooth; the rebuilt top end rolls off early.',
+  detailed: 'Fuller high-frequency reconstruction and crisper attacks.',
+}
+
+function formatKhz(hz: number) {
+  return `${(hz / 1000).toFixed(1)} kHz`
+}
+
+function RestoreStatusLine({ status }: { status: RestoreStatus | null }) {
+  if (!status || status.state === 'off') return null
+  const codec = status.codec ? ` · ${status.codec}` : ''
+  if (status.state === 'active') {
+    const detail = status.cutoffHz > 0
+      ? `codec low-pass at ${formatKhz(status.cutoffHz)}`
+      : 'full-bandwidth source, no top end to rebuild'
+    return (
+      <p className="flex items-center gap-2 text-[11px] text-zinc-300" data-testid="restore-status">
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent-400" />
+        <span className="min-w-0 truncate">Restoring{codec} · {detail}</span>
+      </p>
+    )
+  }
+  return (
+    <p className="flex items-center gap-2 text-[11px] text-zinc-500" data-testid="restore-status">
+      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-zinc-600" />
+      <span className="min-w-0 truncate">
+        {status.state === 'idle' ? 'Waiting for playback' : `Bypassed${codec} · ${status.reason}`}
+      </span>
+    </p>
+  )
+}
+
+function RestoreToggleRow({ label, help, checked, disabled, onChange }: {
+  label: string
+  help: string
+  checked: boolean
+  disabled: boolean
+  onChange: (value: boolean) => void
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="min-w-0">
+        <p className="text-xs text-zinc-200">{label}</p>
+        <p className="text-[10px] text-zinc-500">{help}</p>
+      </div>
+      <Switch checked={checked} disabled={disabled} onChange={onChange} label={label} />
+    </div>
+  )
+}
+
+function RestoreTab() {
+  const restore = useDSPStore((state) => state.restore)
+  const setRestore = useDSPStore((state) => state.setRestore)
+  const [status, setStatus] = useState<RestoreStatus | null>(null)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const off = restore.mode === 'off'
+
+  useEffect(() => {
+    let cancelled = false
+    const refresh = () => {
+      void window.puros.dsp.getRestoreStatus()
+        .then((next) => { if (!cancelled) setStatus(next) })
+        .catch(() => {})
+    }
+    refresh()
+    const timer = window.setInterval(() => { if (!isWindowHidden()) refresh() }, 1000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [])
+
+  const update = (patch: Parameters<typeof setRestore>[0]) => {
+    void setRestore(patch).catch((error) => console.warn('Could not apply Puros Restore settings:', error))
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-mono">Puros Restore</span>
+        <p className="mt-1 text-[11px] text-zinc-500 leading-relaxed max-w-md">
+          Adaptive restoration for compressed audio: rebuilds a plausible top end above the codec&apos;s cut-off,
+          smooths coding artifacts and tightens smeared attacks. It cannot recover what the encoder discarded.
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        <p className="text-xs text-zinc-200">Activation</p>
+        <Segmented<RestoreMode>
+          value={restore.mode}
+          onChange={(mode) => update({ mode })}
+          options={[
+            { id: 'off', label: 'Off' },
+            { id: 'manual', label: 'Manual' },
+            { id: 'auto', label: 'Auto (Lossy Only)' },
+          ]}
+        />
+        <p className="text-[10px] text-zinc-500 leading-relaxed">{RESTORE_MODE_HELP[restore.mode]}</p>
+        <RestoreStatusLine status={status} />
+      </div>
+
+      <div className={`rounded-xl border border-white/5 bg-white/[0.03] p-3 space-y-4 transition-opacity ${off ? 'opacity-50' : ''}`}>
+        <div className="space-y-2">
+          <p className="text-xs text-zinc-200">Restoration profile</p>
+          <Segmented<RestoreProfile>
+            value={restore.profile}
+            onChange={(profile) => update({ profile })}
+            options={[
+              { id: 'adaptive', label: 'Adaptive', disabled: off },
+              { id: 'natural', label: 'Natural', disabled: off },
+              { id: 'detailed', label: 'Detailed', disabled: off },
+            ]}
+          />
+          <p className="text-[10px] text-zinc-500">{RESTORE_PROFILE_HELP[restore.profile]}</p>
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-baseline justify-between gap-3">
+            <div>
+              <p className="text-xs text-zinc-200">Restoration strength</p>
+              <p className="text-[10px] text-zinc-500">0 % to 100 % · default {DEFAULT_RESTORE_SETTINGS.strength} %</p>
+            </div>
+            <span className="font-mono text-xs text-zinc-300">{restore.strength} %</span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={restore.strength}
+            disabled={off}
+            aria-label="Restoration strength"
+            onChange={(e) => update({ strength: Number(e.target.value) })}
+            className="w-full accent-white disabled:opacity-60"
+          />
+        </div>
+
+        <div className="border-t border-white/5 pt-3">
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen(!advancedOpen)}
+            aria-expanded={advancedOpen}
+            className="flex w-full items-center justify-between text-xs text-zinc-300 hover:text-zinc-100"
+          >
+            Advanced settings
+            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${advancedOpen ? 'rotate-180' : ''}`} />
+          </button>
+          {advancedOpen && (
+            <div className="mt-3 space-y-3">
+              <RestoreToggleRow
+                label="Artifact reduction"
+                help="Fills spectral holes and calms flickering high-frequency “birdies”."
+                checked={restore.artifactReduction}
+                disabled={off}
+                onChange={(artifactReduction) => update({ artifactReduction })}
+              />
+              <RestoreToggleRow
+                label="High-frequency reconstruction"
+                help="Extends the spectrum above the codec's low-pass, rolling off naturally."
+                checked={restore.hfReconstruction}
+                disabled={off}
+                onChange={(hfReconstruction) => update({ hfReconstruction })}
+              />
+              <RestoreToggleRow
+                label="Transient restoration"
+                help="Suppresses pre-echo before attacks and restores their clarity."
+                checked={restore.transientRestoration}
+                disabled={off}
+                onChange={(transientRestoration) => update({ transientRestoration })}
+              />
+              <div className="space-y-2">
+                <p className="text-xs text-zinc-200">Position in the DSP chain</p>
+                <Segmented<RestorePosition>
+                  value={restore.position}
+                  onChange={(position) => update({ position })}
+                  options={[
+                    { id: 'source', label: 'First', disabled: off, title: 'On the decoded source, before resampling, EQ, crossfeed and VST' },
+                    { id: 'afterDsp', label: 'Last', disabled: off, title: 'After EQ, crossfeed and VST plug-ins' },
+                  ]}
+                />
+                <p className="text-[10px] text-zinc-500">
+                  First (recommended) repairs the source before anything else. A new position applies from the next track or seek.
+                </p>
+              </div>
+              <div className="flex justify-end">
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  label="Restore defaults"
+                  disabled={off}
+                  onClick={() => update({ ...DEFAULT_RESTORE_SETTINGS, mode: restore.mode })}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+type TopTab = 'autoeq' | 'peq' | 'crossfeed' | 'plugins' | 'restore'
 
 export default function EQPanel() {
-  const { eqEnabled, peqEnabled, crossfeedEnabled, plugins } = useDSPStore()
+  const { eqEnabled, peqEnabled, crossfeedEnabled, plugins, restore } = useDSPStore()
   const [open, setOpen] = useState(false)
   const [topTab, setTopTab] = useState<TopTab>('autoeq')
   const [topTabLoaded, setTopTabLoaded] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
+  const popoverRef = useRef<HTMLDivElement>(null)
 
-  const anyActive = eqEnabled || peqEnabled || crossfeedEnabled || plugins.some((plugin) => plugin.enabled)
+  const anyActive = eqEnabled || peqEnabled || crossfeedEnabled || plugins.some((plugin) => plugin.enabled) ||
+    restore.mode !== 'off'
 
   useEffect(() => {
     let cancelled = false
     void getStringSetting(TOP_TAB_KEY).then((value) => {
       if (cancelled) return
-      if (value === 'autoeq' || value === 'peq' || value === 'crossfeed' || value === 'plugins') {
+      if (value === 'autoeq' || value === 'peq' || value === 'crossfeed' || value === 'plugins' || value === 'restore') {
         setTopTab(value)
       }
       setTopTabLoaded(true)
@@ -788,7 +973,8 @@ export default function EQPanel() {
   useEffect(() => {
     if (!open) return
     const close = (e: MouseEvent) => {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) setOpen(false)
+      const target = e.target as Node
+      if (panelRef.current && !panelRef.current.contains(target) && !popoverRef.current?.contains(target)) setOpen(false)
     }
     window.addEventListener('mousedown', close)
     return () => window.removeEventListener('mousedown', close)
@@ -799,8 +985,8 @@ export default function EQPanel() {
       {/* Trigger button */}
       <button
         onClick={() => setOpen(!open)}
-        className={`p-1.5 rounded-md transition-colors ${
-          anyActive ? 'text-purple-400 bg-purple-400/10' : 'text-zinc-400 hover:text-zinc-200'
+        className={`p-1.5 rounded-full transition-colors ${
+          anyActive ? 'text-accent-400 bg-accent-400/10' : 'text-zinc-400 hover:text-zinc-200'
         }`}
         title={anyActive ? 'Equalizer (active)' : 'Equalizer'}
       >
@@ -808,31 +994,43 @@ export default function EQPanel() {
       </button>
 
       {open && (
-        <div className="absolute bottom-full right-0 mb-2 w-120 max-w-[calc(100vw-1rem)] bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl overflow-hidden z-50">
+        <GlassPopover
+          ref={popoverRef}
+          anchorRef={panelRef}
+          radius={12}
+          className="w-120 max-w-[calc(100vw-1rem)] border border-transparent overflow-hidden"
+        >
           {/* Top-level tabs */}
-          <div className="flex border-b border-zinc-800">
-            {([['autoeq', 'AutoEQ'], ['peq', 'Parametric EQ'], ['crossfeed', 'Crossfeed'], ['plugins', 'VST']] as [TopTab, string][]).map(([id, label]) => (
+          {/* Same pill control as Segmented, with an "active" dot per tab. */}
+          <div role="tablist" className="m-3 mb-0 flex gap-0.5 rounded-full border border-white/[0.08] bg-white/[0.03] p-1">
+            {([['autoeq', 'AutoEQ'], ['peq', 'Parametric EQ'], ['crossfeed', 'Crossfeed'], ['plugins', 'VST'], ['restore', 'Restore']] as [TopTab, string][]).map(([id, label]) => (
               <button
                 key={id}
+                type="button"
+                role="tab"
+                aria-selected={topTab === id}
                 onClick={() => setTopTab(id)}
-                className={`flex-1 py-2.5 text-xs font-medium transition-colors ${
+                className={`flex-1 h-7 rounded-full text-xs font-medium transition-colors ${
                   topTab === id
-                    ? 'text-zinc-100 border-b-2 border-purple-500 -mb-px bg-zinc-800/40'
-                    : 'text-zinc-500 hover:text-zinc-300'
+                    ? 'bg-white text-zinc-950'
+                    : 'text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-100'
                 }`}
               >
                 {label}
                 {id === 'autoeq' && eqEnabled && (
-                  <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-purple-500 inline-block" />
+                  <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-accent-500 inline-block" />
                 )}
                 {id === 'peq' && peqEnabled && (
-                  <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-blue-500 inline-block" />
+                  <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-accent-500 inline-block" />
                 )}
                 {id === 'crossfeed' && crossfeedEnabled && (
-                  <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-amber-400 inline-block" />
+                  <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-accent-400 inline-block" />
                 )}
                 {id === 'plugins' && plugins.some((plugin) => plugin.enabled) && (
-                  <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-purple-500 inline-block" />
+                  <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-accent-500 inline-block" />
+                )}
+                {id === 'restore' && restore.mode !== 'off' && (
+                  <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-accent-500 inline-block" />
                 )}
               </button>
             ))}
@@ -840,9 +1038,13 @@ export default function EQPanel() {
 
           {/* Tab content */}
           <div className="p-3 max-h-[70vh] overflow-y-auto">
-            {topTab === 'autoeq' ? <AutoEQTab /> : topTab === 'peq' ? <ParametricEQPanel /> : topTab === 'crossfeed' ? <CrossfeedTab /> : <PluginsTab />}
+            {topTab === 'autoeq' ? <AutoEQTab />
+              : topTab === 'peq' ? <ParametricEQPanel />
+              : topTab === 'crossfeed' ? <CrossfeedTab />
+              : topTab === 'restore' ? <RestoreTab />
+              : <PluginsTab />}
           </div>
-        </div>
+        </GlassPopover>
       )}
     </div>
   )

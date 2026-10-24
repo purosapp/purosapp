@@ -9,7 +9,8 @@
  *   5. Update store with decision for UI display
  *
  * Polls position from the native engine on a timer so queue advancement keeps
- * running while the Electron window is minimized.
+ * running while the Electron window is minimized (less often then, except near
+ * the end of a track; see playbackPollDelayMs).
  *
  * "__default__" virtual device:
  *   - Always opened in shared mode
@@ -76,12 +77,16 @@ import {
   getExclusiveBlockedTransportLabel,
 } from '../utils/audioDeviceTransport'
 import { playbackPreparationService } from './playback/PlaybackPreparationService'
+import { TrackUnavailableError } from './playback/types'
+import { unavailableTrackLabel } from '../utils/trackAvailability'
 import {
   StreamingSessionState,
   type StreamingSessionSnapshot,
 } from './playback/streaming'
 import { isLiveRadioTrack } from './liveRadio/track'
+import { restoreSourceHint } from './restoreSettings'
 import { useProviderStatusStore } from '../store/providerStatusStore'
+import { getWindowActivity, isWindowHidden, useWindowActivityStore } from './windowActivity'
 
 const DEFAULT_DEVICE_ID = '__default__'
 const AUDIO_DEVICE_SETTING_KEY = 'audioDevice'
@@ -93,6 +98,12 @@ const NATIVE_QUEUE_LOOKAHEAD = 1
 const NATIVE_QUEUE_URGENT_LEAD_SECONDS = 20
 const TRACK_END_GUARD_MS = 1500
 const PLAYBACK_POLL_INTERVAL_MS = 250
+/** With another app focused only the progress bar is affected, and it barely moves in 500 ms. */
+const UNFOCUSED_PLAYBACK_POLL_INTERVAL_MS = 500
+/** Out of sight, polling only has to notice the track ending; see the lead below. */
+const HIDDEN_PLAYBACK_POLL_INTERVAL_MS = 1000
+/** Seconds before a track ends from which polling is back at full rate, so advancing stays prompt. */
+const PLAYBACK_POLL_FULL_RATE_LEAD_SECONDS = 5
 const STREAMING_RECOVERY_BYTES = 8 * 1024 * 1024
 const STREAMING_RECOVERY_SEGMENTS = 2
 const LIVE_RADIO_METADATA_POLL_INTERVAL_MS = 15_000
@@ -103,6 +114,8 @@ type ResolvedPlaybackTarget = {
   playbackTarget: string
   playbackFormatInfo: FormatInfo | null
   decisionFormat: TrackFormat | null
+  /** The playable track when the queue entry was an unresolved catalog placeholder (CUE offsets, file path…). */
+  track?: Track
 }
 
 type DeviceFormatSnapshot = { sampleRate: number; bitDepth: number; channels: number } | null | undefined
@@ -185,6 +198,7 @@ class AudioService {
   private unsubscribe: (() => void) | null = null
   private ipcUnsubscribers: Array<() => void> = []
   private pollId: ReturnType<typeof setTimeout> | null = null
+  private pollTick: (() => void | Promise<void>) | null = null
   private pollGeneration = 0
   private seekPending = false
   private notificationTimer: ReturnType<typeof setTimeout> | null = null
@@ -198,6 +212,8 @@ class AudioService {
   private nativeQueuedTrackId: string | null = null
   private nativeQueuedTrack: Track | null = null
   private nativeQueuedFormatInfo: FormatInfo | null = null
+  /** File handed to queueNextFile() for nativeQueuedTrack. */
+  private nativeQueuedPlaybackPath: string | null = null
   private nativeAdvancedFormatInfo: FormatInfo | null = null
   /** Source quality for display when the queued file is a provider conversion. */
   private nativeQueuedSourceFormatInfo: FormatInfo | null = null
@@ -346,7 +362,8 @@ class AudioService {
     const state = usePlayerStore.getState()
     const allowResample = state.audioMode === 'exclusive' && !!state.playbackDecision
     const deemphasis = await this.shouldDeemphasize(track, filePath)
-    return window.puros.audio.playFile(filePath, allowResample, deemphasis, this.currentDsdOutputRate)
+    return window.puros.audio.playFile(filePath, allowResample, deemphasis, this.currentDsdOutputRate,
+      restoreSourceHint(track?.formatInfo))
   }
 
   /**
@@ -492,6 +509,11 @@ class AudioService {
       }),
     )
     this.initMediaSession()
+    this.ipcUnsubscribers.push(
+      useWindowActivityStore.subscribe((state, prev) => {
+        if (prev.activity === 'hidden' && state.activity !== 'hidden') this.catchUpAfterHidden()
+      }),
+    )
 
     // Fetch initial Bluetooth info and keep it updated via push events
     this.refreshBluetoothInfo()
@@ -579,6 +601,12 @@ class AudioService {
           case 'previous':
             store.previous()
             break
+          case 'toggle-shuffle':
+            store.toggleShuffle()
+            break
+          case 'cycle-repeat':
+            store.cycleRepeat()
+            break
           case 'stop':
             void this.cancelActiveProgressiveSessions()
             store.pause()
@@ -620,6 +648,9 @@ class AudioService {
           error: event.error?.message,
         }
         if (event.artifactPath) active.playbackPath = event.artifactPath
+        if (event.state === 'completed' && active.trackIdentity) {
+          usePlayerStore.getState().markPlaybackSourceComplete(active.trackIdentity, active.playbackPath)
+        }
         if (event.state === 'completed' && (event.sourceFormat || event.format)
           && getTrackIdentity(usePlayerStore.getState().currentTrack) === active.trackIdentity) {
           // Display only: e.g. the average bitrate known once the whole file is on disk.
@@ -1353,6 +1384,23 @@ class AudioService {
     return deviceFormat.sampleRate === carrierRate && deviceFormat.bitDepth >= 32 && deviceFormat.channels >= 2
   }
 
+  /** Tells the seek bar which file the engine reads for `track`. */
+  private publishPlaybackSource(track: Track, path: string, growing: boolean) {
+    const trackIdentity = getTrackIdentity(track)
+    if (!trackIdentity || isLiveRadioTrack(track) || /^[a-z][a-z0-9+.-]*:\/\//i.test(path)) {
+      usePlayerStore.getState().setPlaybackSource(null)
+      return
+    }
+    const cueSlice = this.getCueSlice(track)
+    usePlayerStore.getState().setPlaybackSource({
+      trackIdentity,
+      path,
+      growing,
+      startSeconds: cueSlice?.startSeconds ?? 0,
+      durationSeconds: cueSlice?.endSeconds != null ? cueSlice.durationSeconds : null,
+    })
+  }
+
   private getTrackPlaybackPath(track: { playbackFilePath?: string | null; filePath?: string | null } | null | undefined): string | null {
     if (!track) return null
     return track.playbackFilePath ?? track.filePath ?? null
@@ -1534,7 +1582,8 @@ class AudioService {
       if (nextIndex === queueIndex) break
 
       const track = activeQueue[nextIndex]
-      if (track) {
+      // The store's next() skips these too, so gapless handoff stays in step.
+      if (track && !track.unavailableReason) {
         upcoming.push(track)
       }
       nextIndex += 1
@@ -1689,6 +1738,12 @@ class AudioService {
         const latestState = usePlayerStore.getState()
         const latestNextTrack = this.getUpcomingQueuedTracks(latestState, 1)[0] ?? null
         if (!tracksShareIdentity(latestNextTrack, nextTrack)) return
+        // A catalog placeholder only shows it is a CUE slice once resolved; slices play one by one.
+        if (this.isCueSlicedTrack(latestNextTrack)) {
+          this.queuePreparingTrack = null
+          this.queueBlockedTrackId = nextTrackIdentity
+          return
+        }
 
         // The growing file ends where the download stood when it was opened,
         // so the engine would advance to a queued track there, mid-song. Keep
@@ -1704,6 +1759,7 @@ class AudioService {
           this.canQueueWithResampling(resolvedTarget.formatInfo),
           await this.shouldDeemphasize(nextTrack, resolvedTarget.playbackTarget),
           this.dsdOutputPlan(nextTrack, usePlayerStore.getState().deviceCapabilities),
+          restoreSourceHint(resolvedTarget.sourceFormatInfo ?? nextTrack.formatInfo ?? resolvedTarget.formatInfo),
         )
         if (requestToken !== this.queuePreparationToken) return
 
@@ -1711,6 +1767,7 @@ class AudioService {
         if (result.success) {
           this.nativeQueuedTrackId = nextTrackIdentity
           this.nativeQueuedTrack = latestNextTrack
+          this.nativeQueuedPlaybackPath = resolvedTarget.playbackTarget
           this.nativeQueuedFormatInfo = resolvedTarget.formatInfo ?? null
           this.nativeQueuedSourceFormatInfo = resolvedTarget.sourceFormatInfo ?? null
           this.queueBlockedTrackId = null
@@ -1730,6 +1787,11 @@ class AudioService {
         this.nativeQueuedTrack = null
         this.nativeQueuedFormatInfo = null
         this.nativeQueuedSourceFormatInfo = null
+        if (error instanceof TrackUnavailableError) {
+          // Grey it out now; the next tick prepares the track after it instead.
+          usePlayerStore.getState().markTrackUnavailable(nextTrack, error.reason)
+          return
+        }
         this.queueBlockedTrackId = nextTrackIdentity
         console.warn('[Puros] Failed to prepare native next track queue:', error)
       })
@@ -1854,6 +1916,25 @@ class AudioService {
     return { ...track, ...data }
   }
 
+  /**
+   * Playback found that the account cannot stream this track: grey it out in
+   * the queue and move on, the way the services' own apps skip such tracks.
+   */
+  private skipUnavailableTrack(track: Track, reason: string) {
+    const store = usePlayerStore.getState()
+    store.setBufferProgress(null)
+    store.markTrackUnavailable(track, reason)
+    const before = usePlayerStore.getState().queueIndex
+    usePlayerStore.getState().next()
+    const after = usePlayerStore.getState()
+    const notice = `“${track.title}”: ${unavailableTrackLabel(reason)}`
+    if (after.queueIndex !== before) after.setNotification(`Skipped ${notice}`)
+    else {
+      after.setNotification(null)
+      after.setAudioError(notice)
+    }
+  }
+
   private async resolvePlaybackTarget(
     track: NonNullable<ReturnType<typeof usePlayerStore.getState>['currentTrack']>,
     caps: DeviceCapabilities | null,
@@ -1862,7 +1943,8 @@ class AudioService {
     const resolvedPlaceholder = await this.ensureCatalogTrackResolved(track)
     if (!isCurrent()) return null
     if (resolvedPlaceholder) {
-      return this.resolvePlaybackTarget(resolvedPlaceholder, caps, isCurrent)
+      const target = await this.resolvePlaybackTarget(resolvedPlaceholder, caps, isCurrent)
+      return target && { ...target, track: target.track ?? resolvedPlaceholder }
     }
     if (isBufferedStreamingTrack(track)) {
       const provider = getTrackProviderName(track)
@@ -2121,6 +2203,11 @@ class AudioService {
     this.suppressPlayTrackForTrack = nextTrack
     this.nativeAdvancedFormatInfo = this.nativeQueuedFormatInfo
     this.nativeAdvancedSourceFormatInfo = this.nativeQueuedSourceFormatInfo
+    if (this.nativeQueuedTrack === nextTrack && this.nativeQueuedPlaybackPath) {
+      this.publishPlaybackSource(nextTrack, this.nativeQueuedPlaybackPath, false)
+    } else {
+      usePlayerStore.getState().setPlaybackSource(null)
+    }
     this.nativeQueuedTrackId = null
     this.nativeQueuedTrack = null
     this.nativeQueuedFormatInfo = null
@@ -2154,8 +2241,8 @@ class AudioService {
   }
 
   private async playTrack(state: ReturnType<typeof usePlayerStore.getState>) {
-    const track = state.currentTrack
-    if (!track) return
+    const queuedTrack = state.currentTrack
+    if (!queuedTrack) return
     const startPosition = this.pendingStartPosition
     this.pendingStartPosition = 0
     this.clearNativeQueueState()
@@ -2174,7 +2261,7 @@ class AudioService {
       if (token !== this.playToken) return
     }
 
-    if (isLiveRadioTrack(track)) {
+    if (isLiveRadioTrack(queuedTrack)) {
       const liveStore = usePlayerStore.getState()
       if (liveStore.audioMode === 'exclusive') {
         const deviceUid = liveStore.audioDevice ?? DEFAULT_DEVICE_ID
@@ -2199,12 +2286,16 @@ class AudioService {
 
     let resolvedPlaybackTarget: ResolvedPlaybackTarget | null = null
     try {
-      resolvedPlaybackTarget = await this.resolvePlaybackTarget(track, caps, () => token === this.playToken)
+      resolvedPlaybackTarget = await this.resolvePlaybackTarget(queuedTrack, caps, () => token === this.playToken)
     } catch (err) {
       if (token !== this.playToken) return
       if (err instanceof Error && err.name === 'AbortError') {
         usePlayerStore.getState().setNotification(null)
         usePlayerStore.getState().setBufferProgress(null)
+        return
+      }
+      if (err instanceof TrackUnavailableError) {
+        this.skipUnavailableTrack(queuedTrack, err.reason)
         return
       }
       console.error('resolvePlaybackTarget failed:', err)
@@ -2218,6 +2309,8 @@ class AudioService {
 
     if (token !== this.playToken || !resolvedPlaybackTarget) return
     let { playbackTarget, playbackFormatInfo, decisionFormat } = resolvedPlaybackTarget
+    // From here on the resolved track: a catalog placeholder carries no file path or CUE slice.
+    const track = resolvedPlaybackTarget.track ?? queuedTrack
     const sourcePlaybackPath = this.getTrackPlaybackPath(track)
     let usedDsdPcmFallback = !!track.formatInfo?.isDsd && playbackTarget !== sourcePlaybackPath
 
@@ -2303,7 +2396,7 @@ class AudioService {
     // Play the file, or start the live-radio decoder bridge.
     let result = isLiveRadioTrack(track) && track.sourceId
       ? await window.puros.liveRadio.startPlayback(track.sourceId, playbackTarget)
-      : await this.playNativeFile(playbackTarget)
+      : await this.playNativeFile(playbackTarget, track)
 
     if (token !== this.playToken) return
 
@@ -2314,7 +2407,7 @@ class AudioService {
         playbackTarget = fallback.playbackTarget
         playbackFormatInfo = fallback.playbackFormatInfo
         decisionFormat = fallback.decisionFormat
-        result = await this.playNativeFile(playbackTarget)
+        result = await this.playNativeFile(playbackTarget, track)
         if (token !== this.playToken) return
       }
     }
@@ -2343,7 +2436,7 @@ class AudioService {
             }
           }
 
-          result = await this.playNativeFile(playbackTarget)
+          result = await this.playNativeFile(playbackTarget, track)
           if (token !== this.playToken) return
         }
       } catch (fallbackErr) {
@@ -2356,6 +2449,13 @@ class AudioService {
 
     if (result.success) {
       const activeStreaming = this.activeProgressivePlayback
+      // A session that finished meanwhile may have moved its file already.
+      const progressive = activeStreaming?.trackIdentity === getTrackIdentity(track) ? activeStreaming : null
+      this.publishPlaybackSource(
+        track,
+        progressive?.playbackPath ?? playbackTarget,
+        !!progressive && progressive.session.state !== StreamingSessionState.Completed,
+      )
       usePlayerStore.getState().setBufferProgress(
         activeStreaming
           ? activeStreaming.session.completedSegments / Math.max(1, activeStreaming.session.totalSegments)
@@ -2426,7 +2526,7 @@ class AudioService {
                 preferNonMixableInteger: false,
               })
               this.showNotification('Playing DSD via exclusive PCM fallback (not bit-perfect)')
-              const retried = await this.playNativeFile(fallbackTarget.playbackTarget)
+              const retried = await this.playNativeFile(fallbackTarget.playbackTarget, track)
               if (retried.success) {
                 const [retryDuration, retryFmt] = await Promise.all([
                   window.puros.audio.getDuration(),
@@ -2779,6 +2879,7 @@ class AudioService {
       usePlayerStore.getState().setNotification('Streaming interrupted. Playback is paused.')
       return
     }
+    this.publishPlaybackSource(track, fallback.playbackTarget, false)
     if (position > 0) await window.puros.audio.seek(position)
     await window.puros.audio.resume()
     this.suppressEndedUntil = Date.now() + TRACK_END_GUARD_MS
@@ -2961,16 +3062,34 @@ class AudioService {
   private schedulePlaybackPoll(
     generation: number,
     tick: () => void | Promise<void>,
-    delayMs = PLAYBACK_POLL_INTERVAL_MS,
+    delayMs = this.playbackPollDelayMs(),
   ) {
     if (generation !== this.pollGeneration) return
     if (this.pollId !== null) {
       clearTimeout(this.pollId)
     }
+    this.pollTick = tick
     this.pollId = setTimeout(() => {
       this.pollId = null
       void tick()
     }, delayMs)
+  }
+
+  /** Full rate while the window is focused or the track is about to end; slower otherwise. */
+  private playbackPollDelayMs(): number {
+    const activity = getWindowActivity()
+    if (activity === 'active') return PLAYBACK_POLL_INTERVAL_MS
+    const { position, duration } = usePlayerStore.getState()
+    if (duration > 0 && duration - position <= PLAYBACK_POLL_FULL_RATE_LEAD_SECONDS) return PLAYBACK_POLL_INTERVAL_MS
+    return activity === 'hidden' ? HIDDEN_PLAYBACK_POLL_INTERVAL_MS : UNFOCUSED_PLAYBACK_POLL_INTERVAL_MS
+  }
+
+  /** Back in view: refresh what slowed or stopped polling while hidden left stale. */
+  private catchUpAfterHidden() {
+    if (this.pollId !== null && this.pollTick) {
+      this.schedulePlaybackPoll(this.pollGeneration, this.pollTick, 0)
+    }
+    if (this.hardwareVolumePollId) void this.pollHardwareVolume()
   }
 
   private stopPolling() {
@@ -2981,6 +3100,7 @@ class AudioService {
       clearTimeout(this.pollId)
       this.pollId = null
     }
+    this.pollTick = null
   }
 
   /** Switch audio output device and mode. */
@@ -3228,7 +3348,8 @@ class AudioService {
     const isQuiet = () =>
       !this.hardwareVolumeWriting && Date.now() - this.lastLocalVolumeChangeAt >= HARDWARE_VOLUME_LOCAL_GRACE_MS
     const deviceUid = usePlayerStore.getState().audioDevice
-    if (!deviceUid || !isQuiet()) return
+    // Nobody sees the slider while hidden; catchUpAfterHidden reads the DAC on return.
+    if (!deviceUid || !isQuiet() || isWindowHidden()) return
     const info = await window.puros.audio.getHardwareVolume(deviceUid).catch(() => null)
     const latest = usePlayerStore.getState()
     if (!info?.supported || latest.audioDevice !== deviceUid || latest.volumeControl.effective !== 'device') return
@@ -3401,9 +3522,11 @@ class AudioService {
       if (wasPlaying && currentTrack) {
         await this.waitForResync(deviceUid)
         let playbackTarget: string | null = null
+        let playedTrack = currentTrack
         try {
           const resolved = await this.resolvePlaybackTarget(currentTrack, usePlayerStore.getState().deviceCapabilities)
           playbackTarget = resolved?.playbackTarget ?? null
+          playedTrack = resolved?.track ?? currentTrack
         } catch (err) {
           console.error('resolvePlaybackTarget during device switch failed:', err)
           store.setAudioError(
@@ -3412,9 +3535,9 @@ class AudioService {
           return
         }
         if (!playbackTarget) return
-        const playResult = await this.playNativeFile(playbackTarget)
+        const playResult = await this.playNativeFile(playbackTarget, playedTrack)
         if (playResult.success) {
-          const cueSlice = this.getCueSlice(currentTrack)
+          const cueSlice = this.getCueSlice(playedTrack)
           const resumePosition = cueSlice ? cueSlice.startSeconds + currentPos : currentPos
           if (resumePosition > 0) await window.puros.audio.seek(resumePosition)
           store.play()

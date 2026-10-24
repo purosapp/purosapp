@@ -17,12 +17,25 @@ export function useProviderPresentation(provider: string) {
   }
 }
 
-export function ProviderIcon({ provider, compact = false, className }: { provider: string; compact?: boolean; className?: string }) {
+export function ProviderIcon({
+  provider,
+  compact = false,
+  monochrome = false,
+  className,
+}: {
+  provider: string
+  compact?: boolean
+  /** Greyscale logo, so brand colours don't compete with white UI icons (sidebar). */
+  monochrome?: boolean
+  className?: string
+}) {
   const presentation = useProviderPresentation(provider)
   const size = className ?? (compact ? 'w-3 h-3' : 'w-3.5 h-3.5')
   if (provider === 'local') return <FolderLogo className={size} />
-  if (presentation.iconUrl) return <img src={presentation.iconUrl} alt="" className={`${size} shrink-0 object-contain`} />
-  return <span className={`${size} shrink-0 rounded-sm`} style={{ backgroundColor: presentation.brandColor ?? '#71717a' }} />
+  if (presentation.iconUrl) {
+    return <img src={presentation.iconUrl} alt="" className={`${size} shrink-0 object-contain ${monochrome ? 'grayscale brightness-125' : ''}`} />
+  }
+  return <span className={`${size} shrink-0 rounded-sm`} style={{ backgroundColor: monochrome ? '#a1a1aa' : presentation.brandColor ?? '#71717a' }} />
 }
 
 export default function ProviderBadge({ provider, compact = false, iconOnly = false, className = '' }: {

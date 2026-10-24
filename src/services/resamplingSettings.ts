@@ -22,7 +22,8 @@ export type TargetRatePolicy = 'family-max' | 'lowest-above' | 'fixed'
 export type UpsamplingMode = 'off' | '2x' | '4x' | '8x' | 'family-max' | 'device-max'
 export type OutputBitDepthSetting = 'auto' | 16 | 24 | 32
 export type DitherSetting = 'none' | 'tpdf' | 'gauss' | 'shaped' | 'shaped5' | 'shaped9'
-export type HeadroomSetting = 0 | 1 | 2 | 3 | 6
+/** auto: −3 dB when the waveform is rebuilt (rate conversion, room correction), else none. */
+export type HeadroomSetting = 'auto' | 0 | 1 | 2 | 3 | 6
 export type DeemphasisSetting = 'auto' | 'off'
 /** 0 = no limit. Caps every upsampling mode. */
 export type MaxOutputRateSetting = 0 | 96000 | 192000 | 384000 | 768000
@@ -91,8 +92,8 @@ export interface ResamplingSettings extends SoxrFilterSettings {
   maxOutputRate: MaxOutputRateSetting
   outputBitDepth: OutputBitDepthSetting
   dither: DitherSetting
-  /** Attenuation in the processing path so inter-sample peaks don't clip. */
-  headroomDb: HeadroomSetting
+  /** Attenuation in the processing path so inter-sample peaks don't clip (dB, or auto). */
+  headroom: HeadroomSetting
   /** Separate filter for hi-res (88.2 kHz+) sources; null → same as the 1x filter. */
   nxFilter: SoxrFilterSettings | null
   /** Undo CD pre-emphasis flagged in the CUE sheet or tags. */
@@ -128,7 +129,7 @@ export const DEFAULT_RESAMPLING: ResamplingSettings = {
   maxOutputRate: 0,
   outputBitDepth: 'auto',
   dither: 'tpdf',
-  headroomDb: 0,
+  headroom: 'auto',
   nxFilter: null,
   deemphasis: 'auto',
   fir: {
@@ -202,7 +203,7 @@ export const FIR_WINDOWS: ReadonlyArray<{ id: FirWindowSetting; label: string; d
   { id: 'gauss', label: 'Gauss', description: 'Gaussian window: smooth, short time-domain response, ~−120 dB stopband, gentlest roll-off.' },
 ]
 
-export const HEADROOM_OPTIONS: readonly HeadroomSetting[] = [0, 1, 2, 3, 6]
+export const HEADROOM_OPTIONS: readonly HeadroomSetting[] = ['auto', 0, 1, 2, 3, 6]
 export const MAX_OUTPUT_RATE_OPTIONS: readonly MaxOutputRateSetting[] = [0, 96000, 192000, 384000, 768000]
 
 const APPLE_QUALITY_VALUES: Record<AppleQuality, number> = { min: 0, low: 0x20, medium: 0x40, high: 0x60, max: 0x7f }
@@ -279,6 +280,15 @@ export function pickFilter(settings: SoxrFilterSettings): SoxrFilterSettings {
   return { soxrPreset, soxrPrecision, passbandPercent, stopbandPercent, phaseResponse, steepFilter, allowAliasing }
 }
 
+/**
+ * `headroom` replaced `headroomDb`, whose 0 was both the old default and "None".
+ * A saved 0 (or nothing) becomes Auto; a chosen attenuation carries over.
+ */
+function sanitizeHeadroom(input: Record<string, unknown>): HeadroomSetting {
+  const value = input.headroom ?? (input.headroomDb === 0 ? 'auto' : input.headroomDb)
+  return oneOf(HEADROOM_OPTIONS, value, DEFAULT_RESAMPLING.headroom)
+}
+
 export function sanitizeResamplingSettings(raw: unknown): ResamplingSettings {
   const input = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
   const d = DEFAULT_RESAMPLING
@@ -293,7 +303,7 @@ export function sanitizeResamplingSettings(raw: unknown): ResamplingSettings {
     maxOutputRate: oneOf(MAX_OUTPUT_RATE_OPTIONS, input.maxOutputRate, d.maxOutputRate),
     outputBitDepth: oneOf(['auto', 16, 24, 32] as const, input.outputBitDepth, d.outputBitDepth),
     dither: oneOf(DITHER_OPTIONS.map((option) => option.id), input.dither, d.dither),
-    headroomDb: oneOf(HEADROOM_OPTIONS, input.headroomDb, d.headroomDb),
+    headroom: sanitizeHeadroom(input),
     nxFilter: input.nxFilter && typeof input.nxFilter === 'object' ? sanitizeFilter(input.nxFilter) : null,
     deemphasis: oneOf(['auto', 'off'] as const, input.deemphasis, d.deemphasis),
     fir: sanitizeFir(input.fir),
@@ -351,7 +361,9 @@ export interface NativeResamplerConfig {
   appleComplexity: AppleComplexity
   appleQuality: number
   dither: DitherSetting
+  /** Ignored when headroomAuto is set. */
   headroomDb: number
+  headroomAuto: boolean
 }
 
 function toNativeFilter(filter: SoxrFilterSettings): NativeSoxrFilter {
@@ -393,6 +405,15 @@ export type ImpulseResponseInspection =
 
 /** What the engine does to the active track (native getResamplerStatus()). */
 export interface ResamplerStatus {
+  /** Samples run through the 64-bit float chain (any processing). */
+  float64: boolean
+  /** Decoded resolution entering the chain, 0 when unknown. */
+  sourceBits: number
+  /** The decoder hands over float samples (lossy codecs, float PCM). */
+  sourceFloat: boolean
+  /** Integer grid the chain requantizes to, 0 for plain float32. */
+  outputBits: number
+  outputFloat: boolean
   resampling: boolean
   engine: ResamplerEngineSetting | null
   inputRate: number
@@ -403,7 +424,10 @@ export interface ResamplerStatus {
   /** Which SoX filter the source rate selected. */
   filter: '1x' | 'nx'
   deemphasis: boolean
+  /** Attenuation actually applied to this track. */
   headroomDb: number
+  /** headroomDb was chosen by the Auto setting. */
+  headroomAuto: boolean
   /** Highest level reaching the requantizer this track, dBFS. */
   peakDb: number
   clippedSamples: number
@@ -418,6 +442,12 @@ export interface ResamplerStatus {
   modulator: DsdModulatorSetting | null
   /** Modulator stability-guard activations (input too hot). */
   modulatorOverloads: number
+  /** DSD → PCM: the DSD rate decoded to `inputRate`, 0 for PCM sources. */
+  dsdSourceRate: number
+  dsdStages: number
+  /** Ultrasonic low-pass, 0 = none. */
+  dsdFilterHz: number
+  dsdGainDb: number
 }
 
 export function toNativeResamplerConfig(settings: ResamplingSettings): NativeResamplerConfig {
@@ -435,7 +465,8 @@ export function toNativeResamplerConfig(settings: ResamplingSettings): NativeRes
     appleComplexity: settings.appleComplexity,
     appleQuality: APPLE_QUALITY_VALUES[settings.appleQuality],
     dither: settings.dither,
-    headroomDb: settings.headroomDb,
+    headroomDb: settings.headroom === 'auto' ? 0 : settings.headroom,
+    headroomAuto: settings.headroom === 'auto',
   }
 }
 
@@ -524,13 +555,12 @@ export function formatMaxRate(rate: MaxOutputRateSetting): string {
 // DSD → PCM
 // ---------------------------------------------------------------------------
 
+/** DSD → PCM in the audio engine: decimated to `sampleRate` (rounded to dsdRate / 2^k). */
 export interface DsdConversionOptions {
   sampleRate: number
   /** Ultrasonic low-pass cutoff in Hz; 0 = off. */
   filterHz: number
   gainDb: number
-  /** ffmpeg aresample precision for the SoX resampler. */
-  precision: number
 }
 
 const DSD_PCM_RATES = [352800, 176400, 88200]
@@ -555,9 +585,5 @@ export function resolveDsdConversionOptions(
   const sampleRate = resolveDsdPcmRate(settings.dsdPcmRate, caps)
   // A cutoff at or above the new Nyquist is already handled by the resampler's filter.
   const filterHz = settings.dsdFilter !== 'off' && settings.dsdFilter < sampleRate * 0.475 ? settings.dsdFilter : 0
-  const precision = settings.soxrPreset === 'custom'
-    ? settings.soxrPrecision
-    : settings.soxrPreset === 'very-high' || settings.soxrPreset === 'apodizing' ? 28
-      : settings.soxrPreset === 'high' ? 20 : 16
-  return { sampleRate, filterHz, gainDb: settings.dsdGainDb, precision }
+  return { sampleRate, filterHz, gainDb: settings.dsdGainDb }
 }

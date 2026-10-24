@@ -118,6 +118,22 @@ export function initSchema(
       PRIMARY KEY (provider, source_id, quality_key)
     );
 
+    -- Playlists the user downloaded for offline playback. Their provider tracks
+    -- are pinned in the streaming audio cache so trimming never evicts them.
+    CREATE TABLE IF NOT EXISTS offline_playlists (
+      playlist_id INTEGER PRIMARY KEY REFERENCES playlists(id) ON DELETE CASCADE,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS offline_tracks (
+      provider TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      file_size INTEGER NOT NULL DEFAULT 0,
+      downloaded_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+      PRIMARY KEY (provider, source_id)
+    );
+
     CREATE TABLE IF NOT EXISTS tracks (
       id TEXT PRIMARY KEY,
       file_path TEXT UNIQUE NOT NULL,
@@ -511,6 +527,7 @@ export function initSchema(
     CREATE INDEX IF NOT EXISTS idx_streaming_audio_cache_lru ON streaming_audio_cache(provider, last_played_at, last_accessed_at);
     CREATE INDEX IF NOT EXISTS idx_streaming_audio_cache_file ON streaming_audio_cache(file_path);
     CREATE INDEX IF NOT EXISTS idx_streaming_audio_cache_resolved ON streaming_audio_cache(provider, resolved_source_id, quality_key);
+    CREATE INDEX IF NOT EXISTS idx_offline_tracks_file ON offline_tracks(file_path);
     CREATE INDEX IF NOT EXISTS idx_live_radio_custom ON live_radio_stations(is_custom, updated_at);
     CREATE INDEX IF NOT EXISTS idx_live_radio_favorite ON live_radio_stations(is_favorite, updated_at);
   `)
@@ -1124,6 +1141,7 @@ export function initSchema(
   migrateProviderSeparation(db)
   migrateStreamingCacheProvenance(db)
   migrateTrackArtwork(db)
+  migrateTrackAvailability(db)
   ensureProviderBoundaries(db)
   ensureSourceIndexes(db)
   backfillArtworkCache(db)
@@ -1160,4 +1178,21 @@ function migrateTrackArtwork(db: Database.Database): void {
     db.exec(`ALTER TABLE tracks ADD COLUMN art_path TEXT`)
   }
   if ((db.pragma('user_version', { simple: true }) as number) < 32) db.pragma('user_version = 32')
+}
+
+/**
+ * v33: why the signed-in account cannot stream a provider track the service
+ * still lists (`region`, `subscription`, …), as the provider last reported it
+ * or as playback found out. NULL means playable. It is separate from
+ * `catalog_track_sources.available`, which says whether the provider itself is
+ * ready and is rewritten wholesale whenever providers come and go.
+ */
+function migrateTrackAvailability(db: Database.Database): void {
+  for (const table of ['tracks', 'catalog_track_sources']) {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+    if (!columns.some((column) => column.name === 'unavailable_reason')) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN unavailable_reason TEXT`)
+    }
+  }
+  if ((db.pragma('user_version', { simple: true }) as number) < 33) db.pragma('user_version = 33')
 }

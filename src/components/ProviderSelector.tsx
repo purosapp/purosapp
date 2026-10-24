@@ -67,7 +67,7 @@ export default function ProviderSelector() {
       >
         <ProviderIcon provider={providerId} className="w-4.5 h-4.5" />
         {unavailable && (
-          <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-zinc-950 bg-amber-400" />
+          <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-black bg-amber-400" />
         )}
       </button>
 

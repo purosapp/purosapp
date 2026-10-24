@@ -14,8 +14,10 @@ import type {
 } from '../../../src/services/homeProviderShelves'
 import type { FormatInfo } from '../../../src/services/local/formats'
 import { resolveArtworkCacheUrl } from '../artwork/cache'
+import { ensureCatalogReady, getCatalogBrowseService, getCatalogIngestService } from '../catalog/services'
 import { getDb } from '../db'
 import { invokeProvider, listProviderDescriptors } from '../providers'
+import { toTrack as toCatalogProviderTrack } from '../providers/catalogAdapter'
 
 function asPlaylist(item: ProviderHomeShelfV1['items'][number]): ProviderPlaylistV1 | null {
   return 'editable' in item || 'description' in item || 'trackCount' in item && !('durationMs' in item)
@@ -67,7 +69,12 @@ function mapShelfItem(providerId: string, shelf: ProviderHomeShelfV1, item: Prov
   }
 }
 
-function mapTrack(providerId: string, track: ProviderTrackV1, storedFormat: FormatInfo | null): HomeProviderTrack {
+function mapTrack(
+  providerId: string,
+  track: ProviderTrackV1,
+  storedFormat: FormatInfo | null,
+  storedUnavailableReason: string | null,
+): HomeProviderTrack {
   return {
     id: `${providerId}:${track.sourceId}`,
     provider: providerId,
@@ -80,7 +87,28 @@ function mapTrack(providerId: string, track: ProviderTrackV1, storedFormat: Form
     providerUrl: track.providerUrl ?? null,
     trackNumber: track.trackNumber ?? null,
     formatInfo: track.format ?? storedFormat,
+    // The listing wins; without one, keep what playback found out earlier.
+    unavailableReason: track.playable === false
+      ? (track.unavailableReason ?? 'other')
+      : track.playable === true ? null : storedUnavailableReason,
   }
+}
+
+function storedUnavailableReasons(providerId: string, sourceIds: string[]): Map<string, string> {
+  const reasons = new Map<string, string>()
+  for (let offset = 0; offset < sourceIds.length; offset += 400) {
+    const batch = sourceIds.slice(offset, offset + 400)
+    const placeholders = batch.map(() => '?').join(', ')
+    const rows = getDb().prepare(`
+      SELECT source_id, unavailable_reason FROM tracks
+      WHERE source = ? AND source_id IN (${placeholders}) AND unavailable_reason IS NOT NULL
+      UNION
+      SELECT source_id, unavailable_reason FROM catalog_track_sources
+      WHERE provider = ? AND source_id IN (${placeholders}) AND unavailable_reason IS NOT NULL
+    `).all(providerId, ...batch, providerId, ...batch) as Array<{ source_id: string; unavailable_reason: string }>
+    for (const row of rows) reasons.set(row.source_id, row.unavailable_reason)
+  }
+  return reasons
 }
 
 function storedTrackFormats(providerId: string, sourceIds: string[]): Map<string, FormatInfo> {
@@ -119,6 +147,31 @@ function storedTrackFormats(providerId: string, sourceIds: string[]): Map<string
   return formats
 }
 
+/**
+ * Catalog IDs for a collection track, so its artist and album open like any other
+ * catalog entry. Ingested the way search results are, with the availability this
+ * view settled on (a listing that does not say keeps what playback found out).
+ */
+async function catalogLinks(providerId: string, track: ProviderTrackV1, unavailableReason: string | null) {
+  try {
+    const catalogTrackId = await getCatalogIngestService().ingestProviderTrack(toCatalogProviderTrack(providerId, {
+      ...track,
+      playable: unavailableReason ? false : track.playable,
+      // Stored reasons were written from the same SDK union.
+      unavailableReason: unavailableReason as ProviderTrackV1['unavailableReason'],
+    }))
+    const summary = getCatalogBrowseService().getTrackSummary(catalogTrackId)
+    return {
+      catalogTrackId,
+      catalogAlbumId: summary?.albumId ?? null,
+      catalogArtistId: summary?.primaryArtistId ?? null,
+    }
+  } catch (error) {
+    console.warn(`[Puros][Home] Could not link ${providerId} track ${track.sourceId} to the catalog:`, error)
+    return {}
+  }
+}
+
 export async function getProviderShelves(): Promise<HomeProviderShelf[]> {
   const descriptors = listProviderDescriptors().filter(({ manifest, status }) => (
     manifest.capabilities.includes('catalog.home')
@@ -151,7 +204,10 @@ export async function getProviderCollection(
   const response = await invokeProvider(providerId, 'catalog.home', 'getCollection', [{ type: sourceType, sourceId }])
   if (!response.ok || !response.value || typeof response.value !== 'object') return null
   const collection = response.value as unknown as ProviderHomeCollectionV1
-  const formats = storedTrackFormats(providerId, [...new Set(collection.tracks.map((track) => track.sourceId))])
+  const sourceIds = [...new Set(collection.tracks.map((track) => track.sourceId))]
+  const formats = storedTrackFormats(providerId, sourceIds)
+  const unavailableReasons = storedUnavailableReasons(providerId, sourceIds)
+  await ensureCatalogReady()
   return {
     provider: providerId,
     sourceType,
@@ -162,11 +218,14 @@ export async function getProviderCollection(
     artworkUrl: await resolveArtworkCacheUrl(collection.artworkUrl),
     providerUrl: null,
     tracks: await Promise.all(collection.tracks.map(async (track) => {
-      const mapped = mapTrack(providerId, track, formats.get(track.sourceId) ?? null)
+      const mapped = mapTrack(providerId, track, formats.get(track.sourceId) ?? null, unavailableReasons.get(track.sourceId) ?? null)
+      // Artwork first: ingestion then finds it already cached.
+      const artworkUrl = await resolveArtworkCacheUrl(mapped.artworkUrl)
       return {
         ...mapped,
+        ...await catalogLinks(providerId, track, mapped.unavailableReason ?? null),
         discordArtworkUrl: mapped.artworkUrl,
-        artworkUrl: await resolveArtworkCacheUrl(mapped.artworkUrl),
+        artworkUrl,
       }
     })),
   }

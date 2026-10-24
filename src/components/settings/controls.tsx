@@ -1,33 +1,41 @@
-// Small form controls shared by the Audio settings screens.
+// Small form controls shared by Settings, Audio Setup and the EQ panels.
+// Shapes follow ui.tsx: pills for controls, white for "on".
 
 import type { ReactNode } from 'react'
+import { SelectField } from '../ui'
 
 export function Switch({
   checked,
   onChange,
   disabled = false,
   label,
+  title,
+  testId,
 }: {
   checked: boolean
   onChange: (value: boolean) => void
   disabled?: boolean
   label: string
+  title?: string
+  testId?: string
 }) {
   return (
     <button
       type="button"
       role="switch"
+      data-testid={testId}
       aria-checked={checked}
       aria-label={label}
+      title={title}
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={`relative w-9 h-5 rounded-full transition-colors shrink-0 ${
         disabled ? 'opacity-40 cursor-not-allowed' : ''
-      } ${checked ? 'bg-blue-600' : 'bg-zinc-700'}`}
+      } ${checked ? 'bg-white' : 'bg-white/[0.12] hover:bg-white/[0.18]'}`}
     >
       <span
-        className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all duration-150 ${
-          checked ? 'left-[18px]' : 'left-0.5'
+        className={`absolute top-0.5 w-4 h-4 rounded-full shadow-sm transition-all duration-150 ${
+          checked ? 'left-[18px] bg-zinc-950' : 'left-0.5 bg-zinc-300'
         }`}
       />
     </button>
@@ -66,7 +74,7 @@ export function Segmented<T extends string>({
   onChange: (value: T) => void
 }) {
   return (
-    <div className="inline-flex flex-wrap rounded-md border border-white/10 bg-white/[0.03] p-0.5">
+    <div role="radiogroup" className="inline-flex flex-wrap gap-0.5 rounded-full border border-white/[0.08] bg-white/[0.03] p-0.5">
       {options.map((option) => (
         <button
           key={option.id}
@@ -74,12 +82,14 @@ export function Segmented<T extends string>({
           disabled={option.disabled}
           title={option.title}
           onClick={() => onChange(option.id)}
-          className={`px-2.5 py-1 text-xs rounded transition-colors ${
+          role="radio"
+          aria-checked={value === option.id}
+          className={`h-7 px-3 text-xs font-medium rounded-full transition-colors ${
             value === option.id
-              ? 'bg-white/15 text-zinc-100'
+              ? 'bg-white text-zinc-950'
               : option.disabled
                 ? 'text-zinc-600 cursor-not-allowed'
-                : 'text-zinc-400 hover:text-zinc-100'
+                : 'text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-100'
           }`}
         >
           {option.label}
@@ -103,17 +113,11 @@ export function Select({
   disabled?: boolean
 }) {
   return (
-    <select
-      aria-label={label}
-      disabled={disabled}
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      className="bg-zinc-800 border border-white/10 rounded-md px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
-    >
+    <SelectField aria-label={label} disabled={disabled} value={value} onChange={(event) => onChange(event.target.value)}>
       {options.map((option) => (
         <option key={option.value} value={option.value}>{option.label}</option>
       ))}
-    </select>
+    </SelectField>
   )
 }
 
@@ -147,7 +151,7 @@ export function Slider({
         value={value}
         disabled={disabled}
         onChange={(event) => onChange(Number(event.target.value))}
-        className="flex-1 accent-blue-500"
+        className="flex-1 accent-white"
       />
       <output className="w-16 text-right text-xs tabular-nums text-zinc-300">{format(value)}</output>
     </div>

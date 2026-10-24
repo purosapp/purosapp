@@ -121,7 +121,7 @@ function LineChart({
         )}
       </svg>
       {hover && (
-        <div className="pointer-events-none absolute right-1 top-0 rounded-md border border-white/10 bg-zinc-900/95 px-2 py-1 text-[10px] tabular-nums">
+        <div className="pointer-events-none absolute right-1 top-0 rounded-lg border border-white/10 bg-black/85 backdrop-blur-xl px-2 py-1 text-[10px] tabular-nums">
           <span className="text-zinc-100 font-medium">{formatY(hover.y)}</span>
           <span className="text-zinc-500"> at {formatX(hover.x)}</span>
         </div>

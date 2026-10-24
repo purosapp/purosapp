@@ -2,6 +2,12 @@ import { create } from 'zustand'
 import type { AutoEQProfile } from '../services/autoeq/AutoEQParser'
 import { getJsonSetting, setJsonSetting } from '../utils/appSettings'
 import type { AudioPlugin } from '../types/plugins'
+import {
+  DEFAULT_RESTORE_SETTINGS,
+  sanitizeRestoreSettings,
+  toNativeRestoreConfig,
+  type RestoreSettings,
+} from '../services/restoreSettings'
 
 // ---------------------------------------------------------------------------
 // Parametric EQ band
@@ -49,6 +55,8 @@ export const newBandId = () => `peq-${++_bandCounter}`
 
 const DSP_SETTINGS_KEY = 'dsp:state'
 const PLUGINS_SETTINGS_KEY = 'dsp:plugins'
+// Separate key: Puros Restore never rewrites the saved EQ / plug-in chain.
+const RESTORE_SETTINGS_KEY = 'dsp:restore'
 let pluginChangeListenerRegistered = false
 
 interface PersistedDSPState {
@@ -363,6 +371,9 @@ interface DSPState {
   crossfeedEnabled: boolean
   crossfeedCutoffFrequency: number
   crossfeedFeedLevelDb: number
+  // Puros Restore (off unless the user turns it on)
+  restore: RestoreSettings
+  setRestore: (patch: Partial<RestoreSettings>) => Promise<void>
   hydrated: boolean
   // Low-level setter — updates state only, does NOT call native engine.
   // Use this for batching; call syncToEngine() manually afterwards.
@@ -464,6 +475,7 @@ export const useDSPStore = create<DSPState>((set, get) => {
         /^\d+$/.test(id) && Number(id) <= 0xffffffff &&
         typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1)),
     })) : []
+    const restore = sanitizeRestoreSettings(await getJsonSetting<unknown>(RESTORE_SETTINGS_KEY, null))
     const peqBands = normalizePersistedBands(persisted?.peqBands)
     const peqPresets = normalizePersistedPresets(persisted?.peqPresets)
     syncBandCounterFromBands(peqBands)
@@ -475,6 +487,7 @@ export const useDSPStore = create<DSPState>((set, get) => {
 
     set({
       plugins,
+      restore,
       eqEnabled: persisted?.eqEnabled ?? false,
       activeProfile: normalizePersistedProfile(persisted?.activeProfile),
       peqEnabled: (persisted?.peqEnabled ?? false) && peqBands.length > 0,
@@ -493,6 +506,11 @@ export const useDSPStore = create<DSPState>((set, get) => {
     })
 
     await syncToEngine()
+    try {
+      await window.puros.dsp.setRestoreConfig(toNativeRestoreConfig(restore))
+    } catch (error) {
+      console.warn('Puros Restore settings could not be applied:', error)
+    }
     try {
       await window.puros.dsp.setPlugins(plugins)
     } catch (error) {
@@ -530,6 +548,13 @@ export const useDSPStore = create<DSPState>((set, get) => {
 
   return {
     plugins: [],
+    restore: DEFAULT_RESTORE_SETTINGS,
+    setRestore: async (patch) => {
+      const restore = sanitizeRestoreSettings({ ...get().restore, ...patch })
+      set({ restore })
+      await window.puros.dsp.setRestoreConfig(toNativeRestoreConfig(restore))
+      await setJsonSetting(RESTORE_SETTINGS_KEY, restore)
+    },
     setPlugins: async (plugins) => {
       await window.puros.dsp.setPlugins(plugins)
       set({ plugins })

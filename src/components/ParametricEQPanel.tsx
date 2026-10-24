@@ -5,7 +5,7 @@
  * audio engine via syncToEngine() after every mutation.
  */
 
-import { Check, Plus, X } from 'lucide-react'
+import { Check, Plus, RotateCcw, X } from 'lucide-react'
 import { useRef, useEffect, useCallback, useState } from 'react'
 import {
   useDSPStore,
@@ -18,6 +18,8 @@ import {
   type PEQBand,
 } from '../store/dspStore'
 import { usePlayerStore } from '../store/playerStore'
+import { Button, FIELD_SM_CLASS, SelectField, TEXTAREA_SM_CLASS } from './ui'
+import { Switch } from './settings/controls'
 
 // ---------------------------------------------------------------------------
 // Biquad math - Audio EQ Cookbook (Robert Bristow-Johnson)
@@ -333,7 +335,7 @@ function EQGraph({
   return (
     <div
       ref={wrapperRef}
-      className="relative h-36 w-full overflow-hidden rounded-md bg-zinc-950"
+      className="relative h-36 w-full overflow-hidden rounded-xl bg-white/[0.03]"
       onPointerDown={(event) => {
         if (event.target === wrapperRef.current) {
           onCommitBandChange()
@@ -376,7 +378,7 @@ function EQGraph({
       })}
 
       {selectedBand && (
-        <div className="pointer-events-none absolute left-3 top-3 rounded-md border border-white/10 bg-black/65 px-2 py-1 text-[10px] font-mono text-zinc-200 backdrop-blur">
+        <div className="pointer-events-none absolute left-3 top-3 rounded-lg border border-white/10 bg-black/65 px-2 py-1 text-[10px] font-mono text-zinc-200 backdrop-blur">
           {TYPE_LABELS[selectedBand.type]} {Math.round(selectedBand.frequency)} Hz
           {' '}· {selectedBand.gain >= 0 ? '+' : ''}{selectedBand.gain.toFixed(1)} dB
           {' '}· Q {selectedBand.q.toFixed(2)}
@@ -435,7 +437,7 @@ function NumInput({
       onKeyDown={(event) => {
         if (event.key === 'Enter') commit((event.target as HTMLInputElement).value)
       }}
-      className={`bg-zinc-800 border border-zinc-700 rounded text-zinc-200 text-[10px] font-mono text-right px-1 py-0.5 focus:outline-none focus:border-zinc-500 ${className}`}
+      className={`bg-white/5 border border-white/10 rounded text-zinc-200 text-[10px] font-mono text-right px-1 py-0.5 focus:outline-none focus:border-white/20 ${className}`}
     />
   )
 }
@@ -474,8 +476,8 @@ function BandRow({
 
   return (
     <div
-      className={`flex items-center gap-1.5 py-1 group rounded px-1 transition-colors ${
-        selected ? 'bg-zinc-900/80' : 'hover:bg-zinc-900/40'
+      className={`flex items-center gap-1.5 py-1 group rounded-lg px-1 transition-colors ${
+        selected ? 'bg-white/10' : 'hover:bg-white/5'
       }`}
     >
       <button
@@ -490,7 +492,7 @@ function BandRow({
         type="button"
         onClick={() => update({ enabled: !band.enabled })}
         className={`w-3.5 h-3.5 rounded shrink-0 border transition-colors ${
-          band.enabled ? 'bg-zinc-600 border-zinc-500' : 'bg-transparent border-zinc-700'
+          band.enabled ? 'bg-white/15 border-white/20' : 'bg-transparent border-white/10'
         }`}
         title={band.enabled ? 'Disable band' : 'Enable band'}
       >
@@ -502,7 +504,7 @@ function BandRow({
       <select
         value={band.type}
         onChange={(event) => update({ type: event.target.value as PEQBand['type'] })}
-        className="w-10 bg-zinc-800 border border-zinc-700 rounded text-[10px] text-zinc-300 font-mono px-0.5 py-0.5 focus:outline-none focus:border-zinc-500 shrink-0"
+        className="w-10 bg-white/5 border border-white/10 rounded text-[10px] text-zinc-300 font-mono px-0.5 py-0.5 focus:outline-none focus:border-white/20 shrink-0"
       >
         {(Object.keys(TYPE_LABELS) as PEQBand['type'][]).map((type) => (
           <option key={type} value={type}>{TYPE_LABELS[type]}</option>
@@ -572,7 +574,7 @@ function PreampRow({ value, onChange }: { value: number; onChange: (v: number) =
         step={0.1}
         value={value}
         onChange={(event) => onChange(parseFloat(event.target.value))}
-        className="flex-1 accent-zinc-400 h-1"
+        className="flex-1 accent-white h-1"
       />
       <span className="text-[10px] font-mono text-zinc-300 w-12 text-right shrink-0">
         {value >= 0 ? '+' : ''}{value.toFixed(1)} dB
@@ -813,31 +815,19 @@ export default function ParametricEQPanel() {
         </span>
         <div className="flex items-center gap-2">
           {localBands.length > 0 && (
-            <button
-              type="button"
-              onClick={handleResetBands}
-              className="text-[10px] text-zinc-600 hover:text-red-400 transition-colors"
-            >
-              Reset
-            </button>
+            <Button variant="ghost" size="xs" icon={RotateCcw} label="Reset" onClick={handleResetBands} />
           )}
-          <button
-            type="button"
-            onClick={() => void setPEQEnabled(!peqEnabled)}
+          <Switch
+            checked={peqEnabled}
+            onChange={(value) => void setPEQEnabled(value)}
             disabled={localBands.length === 0}
+            label="Parametric EQ"
             title={localBands.length === 0 ? 'Add a band first' : peqEnabled ? 'Disable PEQ' : 'Enable PEQ'}
-            className={`relative w-9 h-5 rounded-full transition-colors ${
-              peqEnabled ? 'bg-blue-600' : 'bg-zinc-700'
-            } ${localBands.length === 0 ? 'opacity-40 cursor-not-allowed' : ''}`}
-          >
-            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all duration-150 ${
-              peqEnabled ? 'left-[18px]' : 'left-0.5'
-            }`} />
-          </button>
+          />
         </div>
       </div>
 
-      <div className="rounded-md border border-zinc-800/80 bg-zinc-900/35 p-2.5 space-y-2">
+      <div className="rounded-xl border border-white/5 bg-white/[0.03] p-2.5 space-y-2">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-mono">
             Presets
@@ -857,85 +847,62 @@ export default function ParametricEQPanel() {
             value={presetName}
             onChange={(event) => setPresetName(event.target.value)}
             placeholder="Preset name"
-            className="flex-1 bg-zinc-800 border border-zinc-700 rounded-md text-xs text-zinc-200 px-2.5 py-1.5 focus:outline-none focus:border-zinc-500 placeholder-zinc-600"
+            className={`${FIELD_SM_CLASS} flex-1`}
           />
-          <button
-            type="button"
-            onClick={() => void handleSavePreset()}
-            className="px-2.5 py-1.5 rounded-md bg-zinc-800 border border-zinc-700 text-[11px] text-zinc-200 hover:bg-zinc-700 transition-colors"
-          >
-            Save
-          </button>
+          <Button variant="secondary" size="xs" label="Save" onClick={() => void handleSavePreset()} />
         </div>
 
         <div className="flex items-center gap-2">
-          <select
+          <SelectField
+            size="sm"
             value={selectedPresetName}
             onChange={(event) => setSelectedPresetName(event.target.value)}
-            className="flex-1 bg-zinc-800 border border-zinc-700 rounded-md text-xs text-zinc-200 px-2.5 py-1.5 focus:outline-none focus:border-zinc-500"
+            className="flex-1"
           >
             <option value="">Select saved preset…</option>
             {peqPresets.map((preset) => (
               <option key={preset.name} value={preset.name}>{preset.name}</option>
             ))}
-          </select>
-          <button
-            type="button"
+          </SelectField>
+          <Button
+            variant="secondary"
+            size="xs"
+            label="Load"
             onClick={() => void handleLoadPreset(selectedPresetName)}
             disabled={!selectedPresetName}
-            className="px-2.5 py-1.5 rounded-md bg-zinc-800 border border-zinc-700 text-[11px] text-zinc-200 hover:bg-zinc-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Load
-          </button>
-          <button
-            type="button"
+          />
+          <Button
+            variant="secondary"
+            size="xs"
+            label="Delete"
             onClick={() => void handleDeletePreset()}
             disabled={!selectedPresetName && !activePEQPresetName}
-            className="px-2.5 py-1.5 rounded-md bg-zinc-800 border border-zinc-700 text-[11px] text-zinc-300 hover:text-red-300 hover:border-red-500/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Delete
-          </button>
+          />
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => importFileRef.current?.click()}
-            className="px-2.5 py-1.5 rounded-md bg-zinc-800 border border-zinc-700 text-[11px] text-zinc-200 hover:bg-zinc-700 transition-colors"
-          >
-            Import file
-          </button>
-          <button
-            type="button"
+          <Button variant="secondary" size="xs" label="Import file" onClick={() => importFileRef.current?.click()} />
+          <Button
+            variant="secondary"
+            size="xs"
+            label={showImportList ? 'Hide list import' : 'Import list'}
             onClick={() => setShowImportList((value) => !value)}
-            className="px-2.5 py-1.5 rounded-md bg-zinc-800 border border-zinc-700 text-[11px] text-zinc-200 hover:bg-zinc-700 transition-colors"
-          >
-            {showImportList ? 'Hide list import' : 'Import list'}
-          </button>
-          <button
-            type="button"
+          />
+          <Button
+            variant="secondary"
+            size="xs"
+            label="Export preset"
             onClick={() => void handleExportSelected()}
             disabled={!selectedPresetName && !activePEQPresetName}
-            className="px-2.5 py-1.5 rounded-md bg-zinc-800 border border-zinc-700 text-[11px] text-zinc-200 hover:bg-zinc-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Export preset
-          </button>
-          <button
-            type="button"
+          />
+          <Button
+            variant="secondary"
+            size="xs"
+            label="Copy list"
             onClick={() => void handleCopySelected()}
             disabled={!selectedPresetName && !activePEQPresetName}
-            className="px-2.5 py-1.5 rounded-md bg-zinc-800 border border-zinc-700 text-[11px] text-zinc-200 hover:bg-zinc-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Copy list
-          </button>
-          <button
-            type="button"
-            onClick={handleExportAll}
-            disabled={peqPresets.length === 0}
-            className="px-2.5 py-1.5 rounded-md bg-zinc-800 border border-zinc-700 text-[11px] text-zinc-200 hover:bg-zinc-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Export all
-          </button>
+          />
+          <Button variant="secondary" size="xs" label="Export all" onClick={handleExportAll} disabled={peqPresets.length === 0} />
         </div>
 
         <input
@@ -952,27 +919,26 @@ export default function ParametricEQPanel() {
               value={importText}
               onChange={(event) => setImportText(event.target.value)}
               placeholder={'Paste JSON presets or Equalizer APO filter lines\n\nPreamp: -3 dB\nFilter 1: ON PK Fc 1000 Hz Gain -2.5 dB Q 1.00'}
-              className="min-h-28 w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-2.5 py-2 text-[11px] text-zinc-200 font-mono focus:outline-none focus:border-zinc-500 placeholder-zinc-600"
+              className={`${TEXTAREA_SM_CLASS} min-h-28 w-full resize-y font-mono`}
             />
             <div className="flex items-center justify-between gap-2">
               <p className="text-[10px] text-zinc-600">
                 Supports saved preset JSON and Equalizer APO style lists.
               </p>
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="xs"
+                label="Import pasted list"
                 onClick={() => void handleImportPresets(importText, 'Imported preset')}
                 disabled={!importText.trim()}
-                className="px-2.5 py-1.5 rounded-md bg-zinc-800 border border-zinc-700 text-[11px] text-zinc-200 hover:bg-zinc-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                Import pasted list
-              </button>
+              />
             </div>
           </div>
         )}
       </div>
 
       <div className="space-y-2">
-        <div className="rounded-md overflow-hidden">
+        <div className="rounded-xl overflow-hidden">
           <EQGraph
             peqBands={localBands}
             peqEnabled={peqEnabled}
@@ -996,7 +962,7 @@ export default function ParametricEQPanel() {
       )}
 
       {localBands.length > 0 ? (
-        <div className="space-y-0 divide-y divide-zinc-800/60">
+        <div className="space-y-0 divide-y divide-white/5">
           <div className="flex items-center gap-1.5 pb-1">
             <span className="w-2 shrink-0" />
             <span className="w-3.5 shrink-0" />
@@ -1024,14 +990,7 @@ export default function ParametricEQPanel() {
         </p>
       )}
 
-      <button
-        type="button"
-        onClick={handleAddBand}
-        className="w-full flex items-center justify-center gap-1.5 py-1.5 border border-dashed border-zinc-700 rounded-md text-[11px] text-zinc-500 hover:text-zinc-300 hover:border-zinc-500 transition-colors"
-      >
-        <Plus className="w-3 h-3" strokeWidth={2.5} />
-        Add band
-      </button>
+      <Button variant="quiet" size="xs" icon={Plus} label="Add band" onClick={handleAddBand} className="w-full" />
 
       {eqEnabled && activeProfile && (
         <p className="text-[9px] text-zinc-600 text-center">

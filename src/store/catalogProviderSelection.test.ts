@@ -45,7 +45,7 @@ describe('provider browsing state', () => {
   })
   it('opens a source-specific profile from a pin or playlist in its owner provider', async () => {
     const ref = { providerId: 'tidal', entityType: 'artist' as const, sourceId: 'artist-1' }
-    const artist: CatalogArtistPage = { sourceRef: ref, id: sourceEntityId(ref), name: 'Artist', normalizedName: 'artist', artworkUrl: null, artworkId: null, availability: { inLibrary: true, availableProviderIds: ['tidal'], playable: true }, sourceLinks: [], albumCount: 0, trackCount: 0, bio: null, bioSource: null, bioUrl: null, genres: [], topTracks: [], releases: [], playlists: [], relatedArtists: [], localAlbums: [], appearsOn: [], credits: [], roleSummary: [], collaborators: [] }
+    const artist: CatalogArtistPage = { sourceRef: ref, id: sourceEntityId(ref), name: 'Artist', normalizedName: 'artist', artworkUrl: null, artworkId: null, availability: { inLibrary: true, availableProviderIds: ['tidal'], playable: true, unavailableReason: null }, sourceLinks: [], albumCount: 0, trackCount: 0, bio: null, bioSource: null, bioUrl: null, genres: [], topTracks: [], releases: [], playlists: [], relatedArtists: [], localAlbums: [], appearsOn: [], credits: [], roleSummary: [], collaborators: [] }
     vi.stubGlobal('window', { puros: { catalog: {
       getArtistPreview: vi.fn(async () => artist), getArtist: vi.fn(async () => artist),
       getArtistReleases: vi.fn(async () => []), getArtistTopTracks: vi.fn(async () => []), getArtistRelated: vi.fn(async () => []), getArtistPlaylists: vi.fn(async () => []),

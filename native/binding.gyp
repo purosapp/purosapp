@@ -9,6 +9,8 @@
         "src/Resampler.cpp",
         "src/FirFilter.cpp",
         "src/DsdModulator.cpp",
+        "src/DsdDecimator.cpp",
+        "src/PurosRestore.cpp",
         "src/PluginRack.mm",
         "vendor/vst3sdk-interfaces/pluginterfaces/base/coreiids.cpp",
         "vendor/vst3sdk-interfaces/public.sdk/source/vst/vstinitiids.cpp",

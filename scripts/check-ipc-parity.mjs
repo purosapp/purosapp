@@ -11,6 +11,7 @@ const rendererPath = path.join(repoRoot, 'src')
 
 const EXPECTED_PUSH_CHANNELS = [
   'app:open-settings',
+  'app:window-activity-changed',
   'audio:bluetooth-info',
   'audio:default-device-changed',
   'audio:mode-changed',
@@ -23,6 +24,7 @@ const EXPECTED_PUSH_CHANNELS = [
   'live-radio:changed',
   'live-radio:playback-status',
   'player:media-command',
+  'player:open-recent',
   'playlists:changed',
   'provider:warning',
   'provider:event',

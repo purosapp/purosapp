@@ -54,7 +54,7 @@ function toAlbum(providerId: string, album: ProviderAlbumV1): CatalogProviderAlb
   }
 }
 
-function toTrack(providerId: string, track: ProviderTrackV1): CatalogProviderTrack {
+export function toTrack(providerId: string, track: ProviderTrackV1): CatalogProviderTrack {
   return {
     ...track,
     provider: providerId,

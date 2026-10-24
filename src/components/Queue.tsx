@@ -1,25 +1,36 @@
 /**
- * Queue panel — shows the current and upcoming tracks.
+ * Queue sidebar — a docked column along the window's right edge, like
+ * Music's Playing Next: playback toggles, the playing track, what plays
+ * next, AutoPlay, and when the queue will finish.
+ *
+ * It mirrors the left sidebar: the window's native glass shows through it
+ * (App clears the black backdrop under the column), behind the same light
+ * tint and hairline, with sidebar-style headings and rows. It runs the full
+ * window height, so its toolbar sits in the title bar.
  */
 
-import { X } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
-import { usePlayerStore } from '../store/playerStore'
+import { Clock3, History, Infinity as InfinityIcon, Music, Repeat, Repeat1, Shuffle, X } from 'lucide-react'
+import { useMemo, useState, type ReactNode } from 'react'
+import { usePlayerStore, type Track } from '../store/playerStore'
 import { useAppShellStore } from '../store/appShellStore'
+import { useSettingsStore } from '../store/settingsStore'
+import NowPlayingBars from './NowPlayingBars'
+import { formatTotalDuration, formatTrackDuration } from '../utils/formatTime'
+import { unavailableTrackLabel } from '../utils/trackAvailability'
 
-function formatDuration(seconds: number): string {
-  const m = Math.floor(seconds / 60)
-  const s = Math.floor(seconds % 60)
-  return `${m}:${s.toString().padStart(2, '0')}`
-}
+/** Width of the queue column, in px. */
+export const QUEUE_WIDTH = 320
+const ROW_ARTWORK = 40
 
-export default function Queue({
-  open,
-  onClose,
-}: {
-  open: boolean
-  onClose: () => void
-}) {
+const drag = { WebkitAppRegion: 'drag' } as React.CSSProperties
+const noDrag = { WebkitAppRegion: 'no-drag' } as React.CSSProperties
+
+/** Same rows as the left sidebar: soft grey hover, a brighter grey for the playing track. */
+const ROW_CLASS = 'group relative flex items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors'
+const ROW_ACTIVE = 'bg-white/12'
+const ROW_IDLE = 'cursor-pointer hover:bg-white/5'
+
+export default function Queue({ onToggle }: { onToggle: () => void }) {
   const {
     queue,
     queuePrimaryLength,
@@ -27,22 +38,42 @@ export default function Queue({
     shuffledQueue,
     queueIndex,
     shuffle,
+    repeat,
     currentTrack,
     removeFromQueue,
     clearQueue,
     jumpToQueueIndex,
     reorderQueue,
+    toggleShuffle,
+    cycleRepeat,
     setNotification,
   } = usePlayerStore()
+  const autoPlay = useSettingsStore((s) => s.endlessPlaybackEnabled)
+  const setAutoPlay = useSettingsStore((s) => s.setEndlessPlaybackEnabled)
   const openCatalogArtist = useAppShellStore((s) => s.openCatalogArtist)
   const openCatalogAlbum = useAppShellStore((s) => s.openCatalogAlbum)
+  const [showHistory, setShowHistory] = useState(false)
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
 
   const activeQueue = shuffle ? shuffledQueue : queue
-  const primaryUpcomingTracks = activeQueue.slice(queueIndex + 1, Math.max(queueIndex + 1, queuePrimaryLength))
-  const radioUpcomingTracks = activeQueue.slice(Math.max(queueIndex + 1, queuePrimaryLength))
+  const firstUpcoming = queueIndex + 1
+  const radioStart = Math.max(firstUpcoming, queuePrimaryLength)
+  const historyTracks = queueIndex > 0 ? activeQueue.slice(0, queueIndex) : []
+  const primaryUpcomingTracks = activeQueue.slice(firstUpcoming, radioStart)
+  const radioUpcomingTracks = activeQueue.slice(radioStart)
   const hasUpcomingTracks = primaryUpcomingTracks.length > 0 || radioUpcomingTracks.length > 0
+  const upcomingSeconds = useMemo(
+    () => activeQueue.slice(firstUpcoming).reduce((sum, track) => sum + (track.unavailableReason ? 0 : track.duration || 0), 0),
+    [activeQueue, firstUpcoming],
+  )
+
+  // "From <playlist>": the context the queue was started from. Artist radio
+  // labels its own section, so fall back to the next queued track's context.
+  const sourceContext = currentTrack?.playbackContext?.kind !== 'artist-radio'
+    ? currentTrack?.playbackContext ?? primaryUpcomingTracks[0]?.playbackContext
+    : primaryUpcomingTracks[0]?.playbackContext
+  const inPrimary = queueIndex >= 0 && queueIndex < queuePrimaryLength
 
   const handleDragStart = (index: number) => (event: React.DragEvent<HTMLDivElement>) => {
     if (shuffle) {
@@ -76,168 +107,348 @@ export default function Queue({
     setDragOverIndex(null)
   }
 
+  const renderRow = (track: Track, absoluteIndex: number, indexLabel: number | null, played = false) => (
+    <QueueRow
+      key={`${track.id}-${absoluteIndex}`}
+      track={track}
+      indexLabel={indexLabel}
+      played={played}
+      draggable={!shuffle && !played}
+      dragActive={dragOverIndex === absoluteIndex && draggedIndex !== absoluteIndex}
+      onOpenArtist={openCatalogArtist}
+      onOpenAlbum={openCatalogAlbum}
+      onPlay={() => jumpToQueueIndex(absoluteIndex)}
+      onRemove={played ? undefined : () => removeFromQueue(absoluteIndex)}
+      onDragStart={handleDragStart(absoluteIndex)}
+      onDragOver={handleDragOver(absoluteIndex)}
+      onDrop={handleDrop(absoluteIndex)}
+      onDragEnd={handleDragEnd}
+    />
+  )
+
   return (
-    <aside
-      className={`flex h-full w-[23rem] flex-col overflow-hidden rounded-[30px] border border-white/8 bg-black/22 shadow-[0_24px_70px_rgba(0,0,0,0.3)] backdrop-blur-2xl transition-all duration-300 ease-out ${
-        open ? 'scale-100' : 'scale-[0.985]'
-      }`}
-    >
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-white/8 px-5 py-4">
-        <div>
-          <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-500">Queue</p>
-          <p className="mt-1 text-sm text-zinc-200">
-            {Math.max(activeQueue.length - Math.max(queueIndex + 1, 0), 0)} upcoming
-          </p>
+    <aside aria-label="Queue" className="relative flex h-full flex-col">
+      {/* Title bar: the column covers the title bar's own queue toggle, so it
+          draws one in the same spot, next to the playback modes. */}
+      <div className="flex h-17 shrink-0 items-center gap-2 pr-4 pl-3" style={drag}>
+        <div className="flex h-9 shrink-0 items-center rounded-full bg-zinc-900/80" style={noDrag}>
+          <ToolbarToggle active={shuffle} title="Shuffle" onClick={toggleShuffle}>
+            <Shuffle className="h-3.75 w-3.75" />
+          </ToolbarToggle>
+          <ToolbarToggle active={repeat !== 'off'} title={`Repeat: ${repeat}`} onClick={cycleRepeat}>
+            {repeat === 'one' ? <Repeat1 className="h-3.75 w-3.75" /> : <Repeat className="h-3.75 w-3.75" />}
+          </ToolbarToggle>
+          <ToolbarToggle
+            active={autoPlay}
+            title={autoPlay ? 'AutoPlay on' : 'AutoPlay off'}
+            onClick={() => void setAutoPlay(!autoPlay)}
+          >
+            <InfinityIcon className="h-4 w-4" />
+          </ToolbarToggle>
         </div>
-        <div className="flex items-center gap-1.5">
-          {queue.length > 0 && (
-            <button
-              onClick={clearQueue}
-              className="rounded-full border border-white/10 px-3 py-1.5 text-[11px] text-zinc-400 hover:border-white/15 hover:bg-white/[0.05] hover:text-zinc-100 transition-colors"
-            >
-              Clear
-            </button>
-          )}
+        {queue.length > 0 && (
           <button
             type="button"
-            onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-zinc-500 hover:border-white/15 hover:bg-white/[0.05] hover:text-zinc-200 transition-colors"
-            title="Close queue"
+            onClick={clearQueue}
+            className="h-9 rounded-full bg-zinc-900/80 px-3.5 text-[13px] text-zinc-200 transition-colors hover:bg-white/8 hover:text-white"
+            style={noDrag}
           >
-            <X className="h-3.5 w-3.5" />
+            Clear
           </button>
+        )}
+        <div className="ml-auto">
+          <QueueToggleButton open onToggle={onToggle} />
         </div>
       </div>
 
-      {/* Now playing */}
-      {currentTrack && (
-        <div className="border-b border-white/8 px-5 py-4">
-          <p className="mb-2 text-[10px] uppercase tracking-[0.22em] text-zinc-500">
-            Now Playing
-          </p>
-          <div className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-3">
-            <p className="text-sm text-zinc-100 truncate">{currentTrack.title}</p>
-            <div className="mt-1 text-xs text-zinc-400 truncate flex items-center gap-1.5">
-              {currentTrack.catalogArtistId ? (
-                <button
-                  className="truncate hover:text-zinc-100 transition-colors"
-                  onClick={() => void openCatalogArtist(currentTrack.catalogArtistId!)}
-                >
-                  {currentTrack.artist}
-                </button>
-              ) : (
-                <span className="truncate">{currentTrack.artist}</span>
-              )}
-              <span>—</span>
-              {currentTrack.catalogAlbumId ? (
-                <button
-                  className="truncate hover:text-zinc-100 transition-colors"
-                  onClick={() => void openCatalogAlbum(currentTrack.catalogAlbumId!)}
-                >
-                  {currentTrack.album}
-                </button>
-              ) : (
-                <span className="truncate">{currentTrack.album}</span>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Rows fade out under the time-remaining capsule instead of running into it. */}
+      <div
+        className="min-h-0 flex-1 overflow-y-auto px-3 pb-16"
+        style={{ maskImage: 'linear-gradient(to bottom, black calc(100% - 64px), transparent calc(100% - 8px))' }}
+      >
+        {showHistory && historyTracks.length > 0 && (
+          <section className="pb-4">
+            <SectionHeading title="History" />
+            {historyTracks.map((track, i) => renderRow(track, i, null, true))}
+          </section>
+        )}
 
-      {/* Upcoming */}
-      <div className="flex-1 overflow-y-auto px-3 py-3">
-        {!hasUpcomingTracks ? (
-          <div className="flex h-full items-center justify-center">
-            <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-5 py-6 text-center">
-              <p className="text-sm text-zinc-400">Queue is empty</p>
-              <p className="mt-1 text-xs text-zinc-600">Add a playlist, album, or track to keep listening.</p>
+        {currentTrack && (
+          <section>
+            <SectionHeading
+              title="Now Playing"
+              accessory={historyTracks.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowHistory((value) => !value)}
+                  aria-pressed={showHistory}
+                  title={showHistory ? 'Hide history' : 'Show history'}
+                  className={`flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] tabular-nums transition-colors ${
+                    showHistory ? 'bg-white/12 text-zinc-100' : 'text-zinc-500 hover:bg-white/6 hover:text-zinc-200'
+                  }`}
+                >
+                  <History className="h-3 w-3" />
+                  {historyTracks.length}
+                </button>
+              )}
+            />
+            <div className={`${ROW_CLASS} ${ROW_ACTIVE}`}>
+              <div className="relative shrink-0">
+                <QueueArtwork src={currentTrack.coverUrl ?? currentTrack.artworkUrl} />
+                <div className="absolute inset-0 flex items-center justify-center rounded-md bg-black/45">
+                  <NowPlayingBars />
+                </div>
+              </div>
+              <TrackText
+                track={currentTrack}
+                onOpenArtist={openCatalogArtist}
+                onOpenAlbum={openCatalogAlbum}
+              />
             </div>
+          </section>
+        )}
+
+        {!hasUpcomingTracks ? (
+          <div className="px-4 pt-10 text-center">
+            <p className="text-[13px] text-zinc-400">Nothing up next</p>
+            <p className="mt-1 text-xs text-zinc-600">Add a playlist, album, or track to keep listening.</p>
+            {autoPlay && currentTrack && (
+              <p className="mt-3 text-xs text-zinc-500">AutoPlay will continue with similar music.</p>
+            )}
           </div>
         ) : (
-          <div className="space-y-4">
+          <>
             {primaryUpcomingTracks.length > 0 && (
-              <QueueSection
-                title={`Next Up · ${primaryUpcomingTracks.length} track${primaryUpcomingTracks.length !== 1 ? 's' : ''}`}
-              >
-                {primaryUpcomingTracks.map((track, i) => {
-                  const absoluteIndex = queueIndex + 1 + i
-                  return (
-                    <QueueRow
-                      key={`${track.id}-${absoluteIndex}`}
-                      track={track}
-                      indexLabel={i + 1}
-                      draggable={!shuffle}
-                      dragActive={dragOverIndex === absoluteIndex && draggedIndex !== absoluteIndex}
-                      onOpenArtist={openCatalogArtist}
-                      onOpenAlbum={openCatalogAlbum}
-                      onPlay={() => jumpToQueueIndex(absoluteIndex)}
-                      onRemove={() => removeFromQueue(absoluteIndex)}
-                      onDragStart={handleDragStart(absoluteIndex)}
-                      onDragOver={handleDragOver(absoluteIndex)}
-                      onDrop={handleDrop(absoluteIndex)}
-                      onDragEnd={handleDragEnd}
-                    />
-                  )
-                })}
-              </QueueSection>
+              <section className="pt-5">
+                <SectionHeading
+                  title="Playing Next"
+                  subtitle={sourceContext ? `From ${sourceContext.label}` : undefined}
+                  accessory={inPrimary && (
+                    <span className="text-[11px] tabular-nums text-zinc-500">
+                      {queueIndex + 1} of {queuePrimaryLength}
+                    </span>
+                  )}
+                />
+                {primaryUpcomingTracks.map((track, i) => renderRow(track, firstUpcoming + i, firstUpcoming + i + 1))}
+              </section>
             )}
 
             {radioUpcomingTracks.length > 0 && (
-              <QueueSection
-                title={`${radioArtistName ?? 'Artist'} Radio · ${radioUpcomingTracks.length} track${radioUpcomingTracks.length !== 1 ? 's' : ''}`}
-              >
-                {radioUpcomingTracks.map((track, i) => {
-                  const absoluteIndex = Math.max(queueIndex + 1, queuePrimaryLength) + i
-                  return (
-                    <QueueRow
-                      key={`${track.id}-${absoluteIndex}`}
-                      track={track}
-                      indexLabel={i + 1}
-                      draggable={!shuffle}
-                      dragActive={dragOverIndex === absoluteIndex && draggedIndex !== absoluteIndex}
-                      onOpenArtist={openCatalogArtist}
-                      onOpenAlbum={openCatalogAlbum}
-                      onPlay={() => jumpToQueueIndex(absoluteIndex)}
-                      onRemove={() => removeFromQueue(absoluteIndex)}
-                      onDragStart={handleDragStart(absoluteIndex)}
-                      onDragOver={handleDragOver(absoluteIndex)}
-                      onDrop={handleDrop(absoluteIndex)}
-                      onDragEnd={handleDragEnd}
-                    />
-                  )
-                })}
-              </QueueSection>
+              <section className="pt-5">
+                <SectionHeading
+                  icon={<InfinityIcon className="h-3.5 w-3.5" />}
+                  title="AutoPlay"
+                  subtitle={`${radioArtistName ?? 'Artist'} Radio`}
+                />
+                {radioUpcomingTracks.map((track, i) => renderRow(track, radioStart + i, null))}
+              </section>
             )}
-          </div>
+          </>
         )}
       </div>
+
+      {currentTrack && <QueueFooter upcomingSeconds={upcomingSeconds} />}
     </aside>
   )
 }
 
-function QueueSection({
+/** The title bar's queue toggle; the open queue draws its own copy in the same spot. */
+export function QueueToggleButton({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={open}
+      title="Toggle queue"
+      className={`group flex h-9 w-9 items-center justify-center rounded-full transition-colors ${
+        open ? 'bg-white/10 text-zinc-100' : 'text-zinc-500 hover:bg-white/6 hover:text-zinc-200'
+      }`}
+      style={noDrag}
+    >
+      <QueueIcon />
+    </button>
+  )
+}
+
+function QueueIcon() {
+  return (
+    <svg
+      className="queue-icon h-4.5 w-4.5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path className="queue-icon-line" d="M16 5H3" />
+      <path className="queue-icon-line" d="M11 12H3" />
+      <path className="queue-icon-line" d="M11 19H3" />
+      <g className="queue-icon-note">
+        <path d="M21 16V5" />
+        <circle cx="18" cy="16" r="3" />
+      </g>
+    </svg>
+  )
+}
+
+/** "1 hr 25 min → 11:08 PM": time left in the queue and when it will end. */
+function QueueFooter({ upcomingSeconds }: { upcomingSeconds: number }) {
+  const position = usePlayerStore((s) => s.position)
+  const duration = usePlayerStore((s) => s.duration)
+  const trackDuration = usePlayerStore((s) => s.currentTrack?.duration ?? 0)
+  const repeat = usePlayerStore((s) => s.repeat)
+  if (repeat !== 'off') return null
+
+  const remaining = Math.max(0, (duration || trackDuration) - position) + upcomingSeconds
+  if (remaining < 60) return null
+  const endsAt = new Date(Date.now() + remaining * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+
+  return (
+    <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center">
+      <div className="flex h-8 items-center gap-1.5 rounded-full bg-zinc-900/80 px-3 text-[11px] tabular-nums text-zinc-300">
+        <Clock3 className="h-3 w-3 text-zinc-500" />
+        <span>{formatTotalDuration(remaining)}</span>
+        <span className="text-zinc-600">→</span>
+        <span>{endsAt}</span>
+      </div>
+    </div>
+  )
+}
+
+/** One segment of the toolbar capsule; styled like the title bar's back/forward pair. */
+function ToolbarToggle({
+  active,
   title,
+  onClick,
   children,
 }: {
+  active: boolean
   title: string
+  onClick: () => void
   children: ReactNode
 }) {
   return (
-    <section>
-      <p className="px-2 pb-2 text-[10px] uppercase tracking-[0.22em] text-zinc-500">
-        {title}
-      </p>
-      <div className="overflow-hidden rounded-2xl border border-white/7 bg-white/[0.03]">
-        {children}
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      title={title}
+      className={`flex h-full w-9 items-center justify-center rounded-full transition-colors ${
+        active ? 'bg-accent-400/15 text-accent-400' : 'text-zinc-300 hover:bg-white/8 hover:text-white'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
+/** Section title in the left sidebar's style ("Library", "Playlists"). */
+function SectionHeading({
+  title,
+  subtitle,
+  icon,
+  accessory,
+}: {
+  title: string
+  subtitle?: string
+  icon?: ReactNode
+  accessory?: ReactNode
+}) {
+  return (
+    <div className="flex min-h-6 items-center justify-between gap-3 px-2 pb-1.5">
+      <div className="min-w-0">
+        <p className="flex items-center gap-1 text-[11px] font-semibold text-zinc-500">
+          {icon}
+          {title}
+        </p>
+        {subtitle && <p className="mt-0.5 truncate text-[13px] text-zinc-200">{subtitle}</p>}
       </div>
-    </section>
+      {accessory && <div className="shrink-0">{accessory}</div>}
+    </div>
+  )
+}
+
+/**
+ * Lazy, decode-off-thread artwork for queue rows. Queues can hold whole
+ * playlists, so rows skip ArtworkThumbnail's preload-and-crossfade.
+ */
+function QueueArtwork({ src, size = ROW_ARTWORK }: { src: string | null | undefined; size?: number }) {
+  return (
+    <div
+      className="relative shrink-0 overflow-hidden rounded-md bg-zinc-800"
+      style={{ width: size, height: size }}
+    >
+      <Music className="absolute inset-0 m-auto text-zinc-600" style={{ width: size * 0.4, height: size * 0.4 }} />
+      {src && (
+        <img
+          src={src}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          draggable={false}
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+      )}
+    </div>
+  )
+}
+
+function TrackText({
+  track,
+  onOpenArtist,
+  onOpenAlbum,
+}: {
+  track: Track
+  onOpenArtist: (catalogArtistId: string) => Promise<void>
+  onOpenAlbum: (catalogAlbumId: string) => Promise<void>
+}) {
+  const { catalogArtistId, catalogAlbumId } = track
+  return (
+    <div className="min-w-0 flex-1">
+      <p className="truncate text-[13px] text-zinc-100">{track.title}</p>
+      {/* One line that truncates as a whole, so the album isn't cut short
+          while the artist still fits. The links are inline spans for that. */}
+      <p className="mt-0.5 truncate text-xs text-zinc-500">
+        <TextLink onClick={catalogArtistId ? () => void onOpenArtist(catalogArtistId) : undefined}>
+          {track.artist}
+        </TextLink>
+        <span className="text-zinc-600"> – </span>
+        <TextLink onClick={catalogAlbumId ? () => void onOpenAlbum(catalogAlbumId) : undefined}>
+          {track.album}
+        </TextLink>
+      </p>
+    </div>
+  )
+}
+
+function TextLink({ onClick, children }: { onClick?: () => void; children: ReactNode }) {
+  if (!onClick) return <span>{children}</span>
+  return (
+    <span
+      role="link"
+      tabIndex={0}
+      className="cursor-pointer transition-colors hover:text-zinc-200 hover:underline"
+      onClick={(e) => {
+        e.stopPropagation()
+        onClick()
+      }}
+      onKeyDown={(e) => {
+        if (e.key !== 'Enter') return
+        e.stopPropagation()
+        onClick()
+      }}
+    >
+      {children}
+    </span>
   )
 }
 
 function QueueRow({
   track,
   indexLabel,
+  played,
   draggable,
   dragActive,
   onOpenArtist,
@@ -249,14 +460,15 @@ function QueueRow({
   onDrop,
   onDragEnd,
 }: {
-  track: NonNullable<ReturnType<typeof usePlayerStore.getState>['currentTrack']>
-  indexLabel: number
+  track: Track
+  indexLabel: number | null
+  played: boolean
   draggable: boolean
   dragActive: boolean
   onOpenArtist: (catalogArtistId: string) => Promise<void>
   onOpenAlbum: (catalogAlbumId: string) => Promise<void>
   onPlay: () => void
-  onRemove: () => void
+  onRemove?: () => void
   onDragStart: (event: React.DragEvent<HTMLDivElement>) => void
   onDragOver: (event: React.DragEvent<HTMLDivElement>) => void
   onDrop: (event: React.DragEvent<HTMLDivElement>) => void
@@ -269,59 +481,35 @@ function QueueRow({
       onDragOver={onDragOver}
       onDrop={onDrop}
       onDragEnd={onDragEnd}
-      className={`group flex items-center gap-3 border-t border-white/[0.04] px-4 py-3 first:border-t-0 hover:bg-white/[0.04] transition-colors cursor-pointer ${
-        dragActive ? 'border-t-2 border-sky-400 bg-white/[0.05]' : ''
+      onClick={track.unavailableReason ? undefined : onPlay}
+      title={track.unavailableReason ? unavailableTrackLabel(track.unavailableReason) : undefined}
+      className={`${ROW_CLASS} ${ROW_IDLE} [contain-intrinsic-size:auto_52px] [content-visibility:auto] ${
+        track.unavailableReason ? 'cursor-default opacity-40' : played ? 'opacity-50 hover:opacity-100' : ''
       }`}
-      onClick={onPlay}
     >
-      <span className="w-6 shrink-0 text-right text-xs font-mono text-zinc-600">
-        {indexLabel}
+      {/* Drop indicator: an accent line above the row being dragged over. */}
+      {dragActive && <span className="absolute inset-x-2 -top-px h-0.5 rounded-full bg-accent-400" />}
+      {indexLabel !== null && (
+        <span className="w-5 shrink-0 text-right text-[11px] tabular-nums text-zinc-500">{indexLabel}</span>
+      )}
+      <QueueArtwork src={track.coverUrl ?? track.artworkUrl} />
+      <TrackText track={track} onOpenArtist={onOpenArtist} onOpenAlbum={onOpenAlbum} />
+      <span className="shrink-0 text-[11px] tabular-nums text-zinc-500 group-hover:hidden">
+        {formatTrackDuration(track.duration)}
       </span>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm text-zinc-200">{track.title}</p>
-        <div className="mt-0.5 flex items-center gap-1.5 truncate text-xs text-zinc-500">
-          {track.catalogArtistId ? (
-            <button
-              className="truncate hover:text-zinc-100 transition-colors"
-              onClick={(e) => {
-                e.stopPropagation()
-                void onOpenArtist(track.catalogArtistId!)
-              }}
-            >
-              {track.artist}
-            </button>
-          ) : (
-            <span className="truncate">{track.artist}</span>
-          )}
-          <span>—</span>
-          {track.catalogAlbumId ? (
-            <button
-              className="truncate hover:text-zinc-100 transition-colors"
-              onClick={(e) => {
-                e.stopPropagation()
-                void onOpenAlbum(track.catalogAlbumId!)
-              }}
-            >
-              {track.album}
-            </button>
-          ) : (
-            <span className="truncate">{track.album}</span>
-          )}
-        </div>
-      </div>
-      <span className="shrink-0 text-xs font-mono text-zinc-600">
-        {formatDuration(track.duration)}
-      </span>
-      <button
-        onClick={(e) => {
-          e.stopPropagation()
-          onRemove()
-        }}
-        className="text-zinc-600 opacity-0 transition-all hover:text-zinc-300 group-hover:opacity-100"
-        title="Remove from queue"
-      >
-        <X className="w-3.5 h-3.5" />
-      </button>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            onRemove()
+          }}
+          className="hidden h-6 w-6 shrink-0 items-center justify-center rounded-md text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-100 group-hover:flex"
+          title="Remove from queue"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      )}
     </div>
   )
 }

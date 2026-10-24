@@ -118,8 +118,8 @@ export async function mirrorProviderLibrary(
       INSERT INTO tracks (
         id, file_path, duration_ms, format, sample_rate, bit_depth, channels,
         bitrate, lossless, title, genres, isrc, upc, track_number, disc_number,
-        album_id, artist_id, indexed_at, source, source_id, artwork_id, art_path
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'), ?, ?, ?, ?)
+        album_id, artist_id, indexed_at, source, source_id, artwork_id, art_path, unavailable_reason
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'), ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         file_path = excluded.file_path, duration_ms = excluded.duration_ms,
         format = CASE WHEN tracks.stream_info_fetched_at IS NOT NULL THEN tracks.format ELSE excluded.format END,
@@ -135,7 +135,8 @@ export async function mirrorProviderLibrary(
         album_id = excluded.album_id, artist_id = excluded.artist_id,
         source = excluded.source, source_id = excluded.source_id,
         artwork_id = COALESCE(excluded.artwork_id, tracks.artwork_id),
-        art_path = COALESCE(excluded.art_path, tracks.art_path)
+        art_path = COALESCE(excluded.art_path, tracks.art_path),
+        unavailable_reason = excluded.unavailable_reason
     `)
     const clearCredits = db.prepare(`DELETE FROM track_artists WHERE track_id = ?`)
     const addCredit = db.prepare(`INSERT OR REPLACE INTO track_artists (track_id, artist_id, role, position) VALUES (?, ?, ?, ?)`)
@@ -154,6 +155,8 @@ export async function mirrorProviderLibrary(
         // The track's own picture; views show it only when the album has no cover.
         artworkId(track.artworkUrl),
         track.artworkUrl ?? null,
+        // The snapshot replaces what the last sync or a failed playback said.
+        track.playable === false ? (track.unavailableReason ?? 'other') : null,
       )
       reconcileCredits(trackId, track, artists, id, clearCredits, addCredit)
     }

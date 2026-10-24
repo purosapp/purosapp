@@ -78,12 +78,16 @@ export interface CatalogSourceLink {
   matchConfidence: number
   providerUrl: string | null
   available: boolean
+  /** Why the account cannot stream this source although its provider is ready; null when it can. */
+  unavailableReason: string | null
 }
 
 export interface CatalogAvailability {
   inLibrary: boolean
   availableProviderIds: CatalogProviderName[]
   playable: boolean
+  /** The provider's reason when `playable` is false because the account cannot stream the track. */
+  unavailableReason: string | null
 }
 
 export interface CatalogArtistSummary {
@@ -140,6 +144,9 @@ export interface CatalogTrackSummary {
   discNumber: number | null
   albumId: string | null
   albumTitle: string | null
+  /** The track's artwork, or its album's when the track has none. */
+  artworkUrl?: string | null
+  artworkId?: string | null
   primaryArtistId: string | null
   primaryArtistName: string | null
   artistCreditName?: string | null
@@ -275,6 +282,8 @@ export interface CatalogProviderTrack {
   providerUrl?: string | null
   inLibrary?: boolean
   formatInfo?: FormatInfo | null
+  playable?: boolean
+  unavailableReason?: string | null
 }
 
 export interface CatalogProviderSearchResults {
@@ -361,4 +370,6 @@ export interface CatalogTrackIdentityInput {
   localId?: string | null
   inLibrary?: boolean
   providerUrl?: string | null
+  /** NULL when the account can stream the source; see `catalog_track_sources.unavailable_reason`. */
+  unavailableReason?: string | null
 }

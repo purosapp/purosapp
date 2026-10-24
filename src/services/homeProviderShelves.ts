@@ -41,6 +41,8 @@ export interface HomeProviderTrack {
   discordArtworkUrl?: string | null
   trackNumber?: number | null
   formatInfo: FormatInfo | null
+  /** Why the account cannot stream this track; null when it can. */
+  unavailableReason?: string | null
 }
 
 export interface HomeProviderCollectionBundle {

@@ -8,16 +8,23 @@
  *
  *   openExclusive(deviceUid, sampleRate, bitDepth, preferNonMixableInteger?) → async { success, error? }
  *   openShared(deviceUid) → async { success, error? }
- *   playFile(filePath, allowResample?, deemphasis?, dsdOutputRate?) → async { success, error? }
+ *   playFile(filePath, allowResample?, deemphasis?, dsdOutputRate?, sourceHint?, dsdPcm?) → async { success, error? }
+ *       sourceHint = "lossy" | "lossless" | "dsd" | "unknown" (codec metadata for Puros Restore)
+ *       dsdPcm = { sampleRate, filterHz, gainDb }: decode a DSD file to PCM instead of DoP
  *   startPcmStream() → async { success, error? }
- *   queueNextFile(filePath, allowResample?, deemphasis?, dsdOutputRate?) → async { success, error? }
- *   setResamplerConfig({ engine, filter1x, filterNx, appleComplexity, appleQuality, dither, headroomDb }) → void
+ *   queueNextFile(filePath, allowResample?, deemphasis?, dsdOutputRate?, sourceHint?, dsdPcm?) → async { success, error? }
+ *   setRestoreConfig({ mode, profile, strength, artifactReduction, hfReconstruction, transientRestoration, position }) → void
+ *   getRestoreStatus() → { mode, state, reason, sourceClass, codec, position, cutoffHz, confidence, severity, mix,
+ *                          latencyMs, sampleRate }
+ *   setPcmStreamSourceClass(sourceClass, codec) → async void
+ *   setResamplerConfig({ engine, filter1x, filterNx, appleComplexity, appleQuality, dither, headroomDb, headroomAuto }) → void
  *       filter = { recipe, precision, phaseResponse, passbandEnd, stopbandBegin, steepFilter, allowAliasing }
  *       fir = { window, tapsPerPhase, minimumPhase, apodizing, cutoff, attenuationDb }
  *       + fir1x, firNx, convolution { path, gainDb, compensateDelay }
- *   getResamplerStatus() → { resampling, engine, inputRate, outputRate, ditherBits, dither, filter,
- *                            deemphasis, headroomDb, peakDb, clippedSamples, firTaps, convolutionTaps,
- *                            convolutionError }
+ *   getResamplerStatus() → { float64, sourceBits, sourceFloat, outputBits, outputFloat, resampling, engine, inputRate, outputRate, ditherBits, dither, filter,
+ *                            deemphasis, headroomDb, headroomAuto, peakDb, clippedSamples, firTaps, convolutionTaps,
+ *                            convolutionError, dsdOutputRate, modulator, modulatorOverloads,
+ *                            dsdSourceRate, dsdStages, dsdFilterHz, dsdGainDb }
  *   previewFirFilter(fir, inputRate, outputRate) → async { success, frequencies, magnitudeDb, impulse, … }
  *   inspectImpulseResponse(path) → async { success, channels, sampleRate, taps, peakIndex, peakDb }
  *   clearQueuedFile() → async void
@@ -201,6 +208,31 @@ std::atomic<double> cachedDuration{0.0};
 std::mutex cachedFormatMutex;
 DeviceFormat cachedFormat{0, 0, 0};
 ResamplerStatus cachedResamplerStatus;
+RestoreEngineStatus cachedRestoreStatus;
+
+DsdPcmOptions ParseDsdPcmOptions(const Napi::Value& value) {
+    DsdPcmOptions options;
+    if (!value.IsObject()) return options;
+    const Napi::Object object = value.As<Napi::Object>();
+    const auto number = [&](const char* key) {
+        const Napi::Value field = object.Get(key);
+        return field.IsNumber() ? field.As<Napi::Number>().DoubleValue() : 0.0;
+    };
+    const double sampleRate = number("sampleRate");
+    options.sampleRate = sampleRate > 0 && sampleRate <= 1e6 ? static_cast<uint32_t>(sampleRate) : 0;
+    options.filterHz = std::clamp(number("filterHz"), 0.0, 200000.0);
+    options.gainDb = std::clamp(number("gainDb"), 0.0, 12.0);
+    return options;
+}
+
+RestoreSourceClass ParseRestoreSourceClass(const Napi::Value& value) {
+    if (!value.IsString()) return RestoreSourceClass::Unknown;
+    const std::string text = value.As<Napi::String>().Utf8Value();
+    if (text == "lossy") return RestoreSourceClass::Lossy;
+    if (text == "lossless") return RestoreSourceClass::Lossless;
+    if (text == "dsd") return RestoreSourceClass::Dsd;
+    return RestoreSourceClass::Unknown;
+}
 
 const char* ToDoPCapabilityString(DoPCapability capability) {
     switch (capability) {
@@ -380,9 +412,11 @@ Napi::Value PlayFile(const Napi::CallbackInfo& info) {
     const bool allowResample = info.Length() >= 2 && info[1].IsBoolean() && info[1].As<Napi::Boolean>().Value();
     const bool deemphasis = info.Length() >= 3 && info[2].IsBoolean() && info[2].As<Napi::Boolean>().Value();
     const uint32_t dsdOutputRate = info.Length() >= 4 && info[3].IsNumber() ? info[3].As<Napi::Number>().Uint32Value() : 0;
-    return RunOnControlThread(env, "puros-play-file", [path, allowResample, deemphasis, dsdOutputRate] {
+    const RestoreSourceClass sourceHint = info.Length() >= 5 ? ParseRestoreSourceClass(info[4]) : RestoreSourceClass::Unknown;
+    const DsdPcmOptions dsdPcm = info.Length() >= 6 ? ParseDsdPcmOptions(info[5]) : DsdPcmOptions{};
+    return RunOnControlThread(env, "puros-play-file", [path, allowResample, deemphasis, dsdOutputRate, sourceHint, dsdPcm] {
         OpResult result;
-        result.success = engine.playFile(path, allowResample, deemphasis, dsdOutputRate, result.error);
+        result.success = engine.playFile(path, allowResample, deemphasis, dsdOutputRate, sourceHint, dsdPcm, result.error);
         return result;
     });
 }
@@ -407,9 +441,11 @@ Napi::Value QueueNextFile(const Napi::CallbackInfo& info) {
     const bool allowResample = info.Length() >= 2 && info[1].IsBoolean() && info[1].As<Napi::Boolean>().Value();
     const bool deemphasis = info.Length() >= 3 && info[2].IsBoolean() && info[2].As<Napi::Boolean>().Value();
     const uint32_t dsdOutputRate = info.Length() >= 4 && info[3].IsNumber() ? info[3].As<Napi::Number>().Uint32Value() : 0;
-    return RunOnControlThread(env, "puros-queue-file", [path, allowResample, deemphasis, dsdOutputRate] {
+    const RestoreSourceClass sourceHint = info.Length() >= 5 ? ParseRestoreSourceClass(info[4]) : RestoreSourceClass::Unknown;
+    const DsdPcmOptions dsdPcm = info.Length() >= 6 ? ParseDsdPcmOptions(info[5]) : DsdPcmOptions{};
+    return RunOnControlThread(env, "puros-queue-file", [path, allowResample, deemphasis, dsdOutputRate, sourceHint, dsdPcm] {
         OpResult result;
-        result.success = engine.queueNextFile(path, allowResample, deemphasis, dsdOutputRate, result.error);
+        result.success = engine.queueNextFile(path, allowResample, deemphasis, dsdOutputRate, sourceHint, dsdPcm, result.error);
         return result;
     });
 }
@@ -574,6 +610,8 @@ Napi::Value SetResamplerConfig(const Napi::CallbackInfo& info) {
     }
     config.filterNx = obj.Get("filterNx").IsObject() ? filter("filterNx") : config.filter1x;
     config.headroomDb = std::clamp(number(obj, "headroomDb", 0), 0.0, 12.0);
+    const Napi::Value headroomAuto = obj.Get("headroomAuto");
+    config.headroomAuto = headroomAuto.IsBoolean() && headroomAuto.As<Napi::Boolean>().Value();
     const std::string modulator = text("modulator");
     config.modulator = modulator == "sdm5" ? ModulatorType::Order5
         : modulator == "sdm7ec" ? ModulatorType::Order7EC
@@ -604,6 +642,11 @@ Napi::Value GetResamplerStatus(const Napi::CallbackInfo& info) {
         status = cachedResamplerStatus;
     }
     Napi::Object obj = Napi::Object::New(env);
+    obj.Set("float64", Napi::Boolean::New(env, status.float64));
+    obj.Set("sourceBits", Napi::Number::New(env, status.sourceBits));
+    obj.Set("sourceFloat", Napi::Boolean::New(env, status.sourceFloat));
+    obj.Set("outputBits", Napi::Number::New(env, status.outputBits));
+    obj.Set("outputFloat", Napi::Boolean::New(env, status.outputFloat));
     obj.Set("resampling", Napi::Boolean::New(env, status.resampling));
     obj.Set("engine", status.engine.empty() ? env.Null() : Napi::String::New(env, status.engine));
     obj.Set("inputRate", Napi::Number::New(env, status.inputRate));
@@ -613,6 +656,7 @@ Napi::Value GetResamplerStatus(const Napi::CallbackInfo& info) {
     obj.Set("filter", Napi::String::New(env, status.filter.empty() ? "1x" : status.filter));
     obj.Set("deemphasis", Napi::Boolean::New(env, status.deemphasis));
     obj.Set("headroomDb", Napi::Number::New(env, status.headroomDb));
+    obj.Set("headroomAuto", Napi::Boolean::New(env, status.headroomAuto));
     obj.Set("peakDb", Napi::Number::New(env, status.peakDb));
     obj.Set("clippedSamples", Napi::Number::New(env, static_cast<double>(status.clippedSamples)));
     obj.Set("firTaps", Napi::Number::New(env, static_cast<double>(status.firTaps)));
@@ -621,6 +665,10 @@ Napi::Value GetResamplerStatus(const Napi::CallbackInfo& info) {
     obj.Set("dsdOutputRate", Napi::Number::New(env, status.dsdOutputRate));
     obj.Set("modulator", status.modulator.empty() ? env.Null() : Napi::String::New(env, status.modulator));
     obj.Set("modulatorOverloads", Napi::Number::New(env, static_cast<double>(status.modulatorOverloads)));
+    obj.Set("dsdSourceRate", Napi::Number::New(env, status.dsdSourceRate));
+    obj.Set("dsdStages", Napi::Number::New(env, status.dsdStages));
+    obj.Set("dsdFilterHz", Napi::Number::New(env, status.dsdFilterHz));
+    obj.Set("dsdGainDb", Napi::Number::New(env, status.dsdGainDb));
     return obj;
 }
 
@@ -771,6 +819,75 @@ Napi::Value SetCrossfeed(const Napi::CallbackInfo& info) {
 
     engine.setCrossfeed(enabled, cutoffFrequency, feedLevelDb);
     return env.Undefined();
+}
+
+Napi::Value SetRestoreConfig(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        Napi::TypeError::New(env, "Expected: restore config object").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const Napi::Object obj = info[0].As<Napi::Object>();
+    const auto text = [&obj](const char* key) {
+        const Napi::Value value = obj.Get(key);
+        return value.IsString() ? value.As<Napi::String>().Utf8Value() : std::string();
+    };
+    const auto flag = [&obj](const char* key, bool fallback) {
+        const Napi::Value value = obj.Get(key);
+        return value.IsBoolean() ? value.As<Napi::Boolean>().Value() : fallback;
+    };
+    RestoreConfig config;
+    const std::string mode = text("mode");
+    config.mode = mode == "manual" ? RestoreMode::Manual : mode == "auto" ? RestoreMode::Auto : RestoreMode::Off;
+    const std::string profile = text("profile");
+    config.profile = profile == "natural" ? RestoreProfile::Natural
+        : profile == "detailed" ? RestoreProfile::Detailed
+        : RestoreProfile::Adaptive;
+    const Napi::Value strength = obj.Get("strength");
+    const double value = strength.IsNumber() ? strength.As<Napi::Number>().DoubleValue() : 0.3;
+    config.strength = std::isfinite(value) ? std::clamp(value, 0.0, 1.0) : 0.3;
+    config.artifactReduction = flag("artifactReduction", true);
+    config.hfReconstruction = flag("hfReconstruction", true);
+    config.transientRestoration = flag("transientRestoration", true);
+    config.position = text("position") == "afterDsp" ? RestorePosition::AfterDsp : RestorePosition::Source;
+    engine.setRestoreConfig(config);
+    return env.Undefined();
+}
+
+Napi::Value GetRestoreStatus(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    RestoreEngineStatus status;
+    {
+        std::shared_lock<std::shared_mutex> lock(engineStateMutex, std::try_to_lock);
+        std::lock_guard<std::mutex> cacheLock(cachedFormatMutex);
+        if (lock.owns_lock()) cachedRestoreStatus = engine.getRestoreStatus();
+        status = cachedRestoreStatus;
+    }
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("mode", Napi::String::New(env, status.mode));
+    obj.Set("state", Napi::String::New(env, status.state));
+    obj.Set("reason", Napi::String::New(env, status.reason));
+    obj.Set("sourceClass", Napi::String::New(env, status.sourceClass));
+    obj.Set("codec", status.codec.empty() ? env.Null() : Napi::String::New(env, status.codec));
+    obj.Set("position", Napi::String::New(env, status.position));
+    obj.Set("cutoffHz", Napi::Number::New(env, status.cutoffHz));
+    obj.Set("confidence", Napi::Number::New(env, status.confidence));
+    obj.Set("severity", Napi::Number::New(env, status.severity));
+    obj.Set("mix", Napi::Number::New(env, status.mix));
+    obj.Set("latencyMs", Napi::Number::New(env, status.latencyMs));
+    obj.Set("sampleRate", Napi::Number::New(env, status.sampleRate));
+    return obj;
+}
+
+Napi::Value SetPcmStreamSourceClass(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    const RestoreSourceClass sourceClass = info.Length() >= 1 ? ParseRestoreSourceClass(info[0]) : RestoreSourceClass::Unknown;
+    const std::string codec = info.Length() >= 2 && info[1].IsString() ? info[1].As<Napi::String>().Utf8Value() : "";
+    // Serialized after startPcmStream, so it always reaches the stream it describes.
+    return RunOnControlThread(env, "puros-pcm-source", [sourceClass, codec] {
+        engine.setPcmStreamSourceClass(sourceClass, codec);
+        return OpResult{};
+    }, true);
 }
 
 Napi::Value ProbePlugin(const Napi::CallbackInfo& info) {
@@ -1175,6 +1292,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("setEQEnabled", Napi::Function::New(env, SetEQEnabled));
     exports.Set("getEQEnabled", Napi::Function::New(env, GetEQEnabled));
     exports.Set("clearEQProfile", Napi::Function::New(env, ClearEQProfile));
+    exports.Set("setRestoreConfig", Napi::Function::New(env, SetRestoreConfig));
+    exports.Set("getRestoreStatus", Napi::Function::New(env, GetRestoreStatus));
+    exports.Set("setPcmStreamSourceClass", Napi::Function::New(env, SetPcmStreamSourceClass));
     exports.Set("close", Napi::Function::New(env, Close));
     exports.Set("closeSync", Napi::Function::New(env, CloseSync));
     exports.Set("getDefaultOutputDeviceUid", Napi::Function::New(env, GetDefaultOutputDeviceUid));

@@ -1,7 +1,7 @@
 import { useCatalogStore } from './store/catalogStore'
 import { ProviderNotice } from './components/ProviderSelector'
 import TopBar from './components/TopBar'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Home from './components/Home'
 import Explore from './components/Explore'
 import ArtistsView from './components/ArtistsView'
@@ -11,11 +11,12 @@ import GenresView from './components/GenresView'
 import HistoryView from './components/HistoryView'
 import PinsView from './components/PinsView'
 import LiveRadio from './components/LiveRadio'
-import Queue from './components/Queue'
+import Queue, { QUEUE_WIDTH } from './components/Queue'
 import Player from './components/Player'
 import Sidebar from './components/Sidebar'
 import PlaylistView from './components/PlaylistView'
 import ProviderCollectionView from './components/ProviderCollectionView'
+import { CollectionGlow } from './components/CollectionView'
 import Settings from './components/Settings'
 import NowPlayingOverlay from './renderer/components/NowPlaying/NowPlayingOverlay'
 import VisualizerPanel from './renderer/components/NowPlaying/VisualizerPanel'
@@ -34,6 +35,10 @@ import { useLastFmStore } from './store/lastfmStore'
 import { useDSPStore } from './store/dspStore'
 import { getBooleanSetting, setBooleanSetting } from './utils/appSettings'
 import { onOpenSettingsRequest, type SettingsTab } from './utils/openSettings'
+import { trackScrollFade } from './utils/scrollFade'
+import { useAccentColorSync } from './utils/accentColor'
+import { startDockMenuSync } from './services/dockMenu'
+import { useWindowDormant } from './services/windowActivity'
 
 function isSpaceKey(event: KeyboardEvent): boolean {
   return event.code === 'Space' || event.key === ' ' || event.key === 'Spacebar'
@@ -63,19 +68,28 @@ function isTextEntryTarget(target: EventTarget | null): boolean {
 }
 
 export function StandaloneVisualizerPage() {
+  // Minimized for a while: drop the WebGL context until the window comes back.
+  const dormant = useWindowDormant()
   return (
     <div className="h-screen w-screen bg-black">
-      <VisualizerPanel
+      {dormant ? null : <VisualizerPanel
         header={null}
         isPlaying={false}
         ambientColor={{ r: 0, g: 0, b: 0 }}
         vizFullscreen={true}
         onToggleVizFullscreen={() => {}}
         standalone
-      />
+      />}
     </div>
   )
 }
+
+/** Gap between the floating player and the window's edges, in px. */
+const PLAYER_INSET = 12
+/** Sidebar width in px (its w-52 column); the player starts right of the sidebar. */
+const SIDEBAR_WIDTH = 208
+/** Black over the sidebar's native glass; low, like a native macOS sidebar. */
+const SIDEBAR_TINT = 0.12
 
 export default function App() {
   const [showQueue, setShowQueue] = useState(true)
@@ -98,12 +112,24 @@ export default function App() {
   const clearProviderWarning = useProviderStatusStore((s) => s.clearWarning)
   const loadProviders = useProviderStatusStore((s) => s.loadProviders)
   const loadSettings = useSettingsStore((s) => s.load)
-  const showLyricsInNowPlaying = useSettingsStore((s) => s.showLyricsInNowPlaying)
+  const lyricsTabEnabled = useSettingsStore((s) => s.nowPlayingTabs.lyrics)
+  // Overlays sit above the player bar, which is taller with the waveform seek bar.
+  const aboveBarClass = useSettingsStore((s) => s.seekBarStyle) === 'waveform' ? 'bottom-26' : 'bottom-22'
   const lyricsProviderPriority = useSettingsStore((s) => s.lyricsProviderPriority)
   const lyricsApiKeys = useSettingsStore((s) => s.lyricsApiKeys)
   const loadLastFm = useLastFmStore((s) => s.load)
   const authenticateLastFm = useLastFmStore((s) => s.authenticate)
   const hydrateDSP = useDSPStore((s) => s.hydrate)
+  const accentSetting = useSettingsStore((s) => s.accent)
+  useAccentColorSync(accentSetting)
+  const contentColumnRef = useRef<HTMLDivElement>(null)
+  const queueInset = showQueue ? QUEUE_WIDTH : 0
+  const toggleQueue = () => setShowQueue((s) => !s)
+
+  useEffect(() => {
+    if (!contentColumnRef.current) return
+    return trackScrollFade(contentColumnRef.current)
+  }, [])
 
   useEffect(() => {
     audioService.init()
@@ -146,6 +172,9 @@ export default function App() {
     if (!queueLoaded) return
     void setBooleanSetting('ui:showQueue', showQueue)
   }, [queueLoaded, showQueue])
+
+  // macOS Dock icon menu: playback controls and recently played playlists.
+  useEffect(() => startDockMenuSync(), [])
 
   // Global keyboard shortcuts.
   useEffect(() => {
@@ -206,7 +235,7 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!showLyricsInNowPlaying || !currentTrack) return
+    if (!lyricsTabEnabled || !currentTrack) return
 
     const providers: LyricsProviderConfig[] = lyricsProviderPriority.map((provider) => ({
       id: provider.id,
@@ -235,24 +264,61 @@ export default function App() {
     currentTrack,
     lyricsApiKeys,
     lyricsProviderPriority,
+    lyricsTabEnabled,
     queue,
     queueIndex,
     repeat,
-    showLyricsInNowPlaying,
     shuffle,
     shuffledQueue,
   ])
 
   return (
-    <div className="h-screen flex flex-col bg-zinc-950 text-zinc-100 select-none">
+    <div className="collection-timeline-scope relative isolate h-screen flex flex-col text-zinc-100 select-none">
+      {/* Opaque backdrop everywhere except the sidebar and queue columns
+          (title bar included), which stay clear to show the window's vibrancy. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-y-0 left-52 -z-10 bg-black transition-[right] duration-300 ease-out"
+        style={{ right: queueInset }}
+      />
+      {/* Album/playlist key colour, behind the title bar and the page. */}
+      <CollectionGlow
+        className="absolute inset-y-0 left-52 -z-10 transition-[right] duration-300 ease-out"
+        style={{ right: queueInset }}
+      />
+      {/* Sidebar column: only a faint tint, so the window's native Liquid
+          Glass (or vibrancy on older macOS, see createWindow) reads like a
+          native app's sidebar; the glass itself carries a light dark tint. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-y-0 left-0 w-52 -z-10 border-r border-white/5"
+        style={{ background: `rgba(0, 0, 0, ${SIDEBAR_TINT})` }}
+      />
+
       {/* Title bar: drag region, global search, scope, provider, queue */}
-      <TopBar queueOpen={showQueue} onToggleQueue={() => setShowQueue((s) => !s)} />
+      <TopBar queueOpen={showQueue} onToggleQueue={toggleQueue} />
+
+      {/* Queue column: the left sidebar's mirror image — full height, the
+          same tint over the native glass, a hairline on its inner edge. It
+          slides in as the backdrop above pulls back, and covers the title
+          bar's right end (it draws its own toolbar there). Invisible once
+          closed, so it leaves the tab order. */}
+      <div
+        className={`absolute inset-y-0 right-0 z-40 border-l border-white/5 transition-[translate,visibility] duration-300 ease-out ${
+          showQueue ? 'visible translate-x-0' : 'invisible translate-x-full'
+        }`}
+        style={{ width: QUEUE_WIDTH, background: `rgba(0, 0, 0, ${SIDEBAR_TINT})` }}
+      >
+        <Queue onToggle={toggleQueue} />
+      </div>
 
       {/* Main content */}
       <div className="flex-1 flex min-h-0 relative">
+        {/* The player floats over the content column only, so the sidebar
+            needs no bottom clearance for it. */}
         <Sidebar activeView={activeView} onViewChange={setActiveView} />
 
-        <div className="flex-1 flex flex-col min-h-0 min-w-0">
+        <div ref={contentColumnRef} className="flex-1 flex flex-col min-h-0 min-w-0" data-player-clearance data-scroll-fade>
           {providerWarning && (
             <div className="absolute top-0 left-0 right-0 z-20 px-6 pt-4 pointer-events-none">
               <div className="pointer-events-auto flex items-start justify-between gap-3 rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
@@ -287,34 +353,31 @@ export default function App() {
           )}
         </div>
 
-        {/* Queue overlays the content area — does not affect layout */}
-        <div
-          className={`absolute inset-0 z-30 transition-opacity duration-300 ease-out ${
-            showQueue ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'
-          }`}
-        >
-          <button
-            type="button"
-            aria-label="Close queue"
-            onClick={() => setShowQueue(false)}
-            className={`absolute inset-0 bg-black/18 backdrop-blur-[1px] transition-opacity duration-300 ease-out ${
-              showQueue ? 'opacity-100' : 'opacity-0'
-            }`}
-          />
-          <div
-            className={`absolute inset-y-3 right-3 flex transition-all duration-300 ease-out ${
-              showQueue ? 'translate-x-0 opacity-100' : 'translate-x-6 opacity-0'
-            }`}
-          >
-            <Queue open={showQueue} onClose={() => setShowQueue(false)} />
-          </div>
-        </div>
+        {/* Room for the queue column, which overlays the right of the window. */}
+        <div className="shrink-0 transition-[width] duration-300 ease-out" style={{ width: queueInset }} />
       </div>
 
       {/* Player bar */}
-      <Player onOpenNowPlaying={() => setShowNowPlaying((value) => !value)} />
+      {/* Floats over the bottom of the content column (not the sidebar or the
+          docked queue); content scrolls behind it. */}
+      {/* Above the now playing overlay, which covers the sidebar, so the
+          player centres under it while it is open. */}
+      <div
+        className="pointer-events-none absolute z-45 transition-[left,right] duration-300 ease-out"
+        style={{
+          left: (showNowPlaying ? 0 : SIDEBAR_WIDTH) + PLAYER_INSET,
+          right: PLAYER_INSET + queueInset,
+          bottom: PLAYER_INSET,
+        }}
+      >
+        <div className="pointer-events-auto mx-auto max-w-[960px]">
+          <Player
+            onOpenNowPlaying={() => setShowNowPlaying((value) => !value)}
+          />
+        </div>
+      </div>
 
-      <NowPlayingOverlay open={showNowPlaying} onClose={() => setShowNowPlaying(false)} />
+      <NowPlayingOverlay open={showNowPlaying} onClose={() => setShowNowPlaying(false)} rightInset={queueInset} />
 
       {/* Settings modal */}
       {showSettings && (
@@ -329,7 +392,7 @@ export default function App() {
 
       {/* Transient notification toast */}
       {notification && (
-        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-zinc-800 border border-white/10 rounded-lg shadow-xl text-xs text-zinc-200">
+        <div className={`fixed ${aboveBarClass} left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-zinc-800 border border-white/10 rounded-lg shadow-xl text-xs text-zinc-200`}>
           {notification}
         </div>
       )}

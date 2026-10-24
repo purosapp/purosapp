@@ -8,6 +8,7 @@ import {
   isVolumeModeSetting,
   resolveVolumeMode,
   userVolumeToGain,
+  volumeDecibels,
   type VolumeControlState,
 } from './volumeControl'
 
@@ -76,5 +77,25 @@ describe('hardware volume', () => {
     expect(isVolumeModeSetting('dsp')).toBe(true)
     expect(isVolumeModeSetting('loud')).toBe(false)
     expect(isVolumeModeSetting(null)).toBe(false)
+  })
+})
+
+describe('volumeDecibels', () => {
+  it('follows the slider gain curve for system and DSP volume', () => {
+    expect(volumeDecibels(state('dsp'), 1)).toBe(0)
+    expect(volumeDecibels(state('system'), 0.5)).toBeCloseTo(-12.04, 2)
+    expect(volumeDecibels(state('dsp'), 0)).toBe(Number.NEGATIVE_INFINITY)
+  })
+
+  it('reads the DAC for device volume', () => {
+    expect(volumeDecibels(state('device'), 0.5)).toBe(-18.44)
+    const muted = state('device')
+    muted.hardware = { ...muted.hardware!, muted: true }
+    expect(volumeDecibels(muted, 0.5)).toBe(Number.NEGATIVE_INFINITY)
+    expect(volumeDecibels({ ...state('device'), hardware: null }, 0.5)).toBeNull()
+  })
+
+  it('is unity for fixed volume', () => {
+    expect(volumeDecibels(state('fixed'), 0.3)).toBe(0)
   })
 })

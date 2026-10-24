@@ -99,16 +99,37 @@ export class ProviderLibrarySyncCoordinator {
     return operation
   }
 
-  async syncReadyManagedProviders(): Promise<number> {
+  /**
+   * Syncs every ready host-mirror provider; one failing does not stop the rest.
+   * `skipSyncedWithinMs` leaves out providers whose last completed sync is that
+   * recent (the boot sync: a full snapshot per provider on every launch costs
+   * minutes of provider work and a catalog rebuild each).
+   */
+  async syncReadyManagedProviders(options: { skipSyncedWithinMs?: number } = {}): Promise<number> {
     let count = 0
+    const failures: string[] = []
     for (const descriptor of this.registry.list()) {
-      if (!this.isHostManaged(descriptor.manifest.id)) continue
+      const providerId = descriptor.manifest.id
+      if (!this.isHostManaged(providerId)) continue
       if (!['ready', 'degraded'].includes(descriptor.status.state) || descriptor.status.authenticated === false) continue
-      const result = await this.sync(descriptor.manifest.id)
-      if (!result.ok) throw new Error(result.error.message)
+      if (options.skipSyncedWithinMs && this.syncedWithin(providerId, options.skipSyncedWithinMs)) continue
+      const result = await this.sync(providerId)
+      if (!result.ok) {
+        failures.push(`${providerId}: ${result.error.message}`)
+        continue
+      }
       count += 1
     }
+    if (failures.length > 0) throw new Error(failures.join('; '))
     return count
+  }
+
+  private syncedWithin(providerId: string, ms: number): boolean {
+    if (!this.deps) return false
+    const row = this.deps.getDb().prepare(`
+      SELECT updated_at FROM provider_kv WHERE provider = ? AND key = ?
+    `).get(providerId, CHECKPOINT_KEY) as { updated_at: number } | undefined
+    return !!row && Date.now() - row.updated_at * 1000 < ms
   }
 
   private async run(providerId: string, fullResync = false): Promise<ProviderResultV1<ProviderLibrarySyncPageV1>> {

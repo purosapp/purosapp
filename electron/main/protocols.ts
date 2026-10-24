@@ -1,7 +1,6 @@
 import { net, protocol } from 'electron'
 import { pathToFileURL } from 'node:url'
 import { artCacheDir } from './artwork/cache'
-import { getLocalDsdCacheDir } from './audio/localPlayback'
 import { getDb } from './db'
 import { resolveAllowedExistingFile } from './security/pathPolicy'
 import { getStreamingAudioCacheRoot } from './streamingCache'
@@ -25,7 +24,6 @@ function getAllowedMediaRoots(): string[] {
   return [
     ...getWatchFolderRoots(),
     getStreamingAudioCacheRoot(),
-    getLocalDsdCacheDir(),
   ]
 }
 

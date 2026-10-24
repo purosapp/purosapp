@@ -83,12 +83,15 @@ function isPlaceholderArtistName(name: string | null | undefined) {
   return !value || value === 'unknown artist' || value === 'unknown'
 }
 function buildAvailability(sourceLinks: CatalogSourceLink[]): CatalogAvailability {
-  const providers = new Set(sourceLinks.filter((source) => source.available).map((source) => source.provider))
+  const ready = sourceLinks.filter((source) => source.available)
+  const streamable = ready.filter((source) => !source.unavailableReason)
+  const providers = new Set(streamable.map((source) => source.provider))
   const inLibrary = sourceLinks.some((source) => source.inLibrary)
   return {
     inLibrary,
     availableProviderIds: [...providers],
     playable: providers.size > 0,
+    unavailableReason: providers.size > 0 ? null : ready.find((source) => source.unavailableReason)?.unavailableReason ?? null,
   }
 }
 export class CatalogBrowseService {
@@ -127,11 +130,12 @@ export class CatalogBrowseService {
   }
   private getSourceLinks(kind: CatalogEntityType, id: string): CatalogSourceLink[] {
     const localColumn = `local_${kind}_id`
-    const rows = this.db.prepare(`SELECT provider, source_id, in_library, ${localColumn} as local_id, provider_priority, match_confidence, provider_url, available FROM catalog_${kind}_sources WHERE catalog_${kind}_id = ?`).all(id) as Array<{ provider: string; source_id: string; in_library: number; local_id: string | null; provider_priority: number; match_confidence: number; provider_url: string | null; available: number }>
+    const unavailableColumn = kind === 'track' ? 'unavailable_reason' : 'NULL'
+    const rows = this.db.prepare(`SELECT provider, source_id, in_library, ${localColumn} as local_id, provider_priority, match_confidence, provider_url, available, ${unavailableColumn} as unavailable_reason FROM catalog_${kind}_sources WHERE catalog_${kind}_id = ?`).all(id) as Array<{ provider: string; source_id: string; in_library: number; local_id: string | null; provider_priority: number; match_confidence: number; provider_url: string | null; available: number; unavailable_reason: string | null }>
     const ref = parseSourceEntityId(id)
     return rows.filter(r => ref && r.provider === ref.providerId && r.source_id === ref.sourceId).map(r => ({ provider: r.provider, sourceId: r.source_id, inLibrary: !!r.in_library, localId: r.local_id, providerPriority: 0, matchConfidence: 1, providerUrl: r.provider_url, available: kind === 'track' && r.provider === 'local'
       ? this.localTrackExists(r.local_id ?? r.source_id)
-      : !!r.available }))
+      : !!r.available, unavailableReason: r.unavailable_reason }))
   }
   private getFieldProvenance(entityType: CatalogEntityType, id: string): FieldProvenance[] {
     return this.db.prepare(`
@@ -484,11 +488,14 @@ export class CatalogBrowseService {
     if (!resolvedId) return null
     id = resolvedId
     const row = this.db.prepare(`
-      SELECT id, title, normalized_title, duration_ms, track_number, disc_number,
-             album_id, album_title, primary_artist_id, primary_artist_name,
-             format, sample_rate, bit_depth, bitrate, channels, lossless, stream_info_fetched_at
-      FROM catalog_tracks
-      WHERE id = ?
+      SELECT ct.id, ct.title, ct.normalized_title, ct.duration_ms, ct.track_number, ct.disc_number,
+             ct.album_id, ct.album_title, ct.primary_artist_id, ct.primary_artist_name,
+             ct.format, ct.sample_rate, ct.bit_depth, ct.bitrate, ct.channels, ct.lossless, ct.stream_info_fetched_at,
+             COALESCE(ct.artwork_url, ca.artwork_url) AS artwork_url,
+             COALESCE(ct.artwork_id, ca.artwork_id) AS artwork_id
+      FROM catalog_tracks ct
+      LEFT JOIN catalog_albums ca ON ca.id = ct.album_id
+      WHERE ct.id = ?
     `).get(id) as {
       id: string
       title: string
@@ -507,6 +514,8 @@ export class CatalogBrowseService {
       channels: number | null
       lossless: number
       stream_info_fetched_at: number | null
+      artwork_url: string | null
+      artwork_id: string | null
     } | undefined
     if (!row) return null
 
@@ -535,6 +544,8 @@ export class CatalogBrowseService {
       discNumber: row.disc_number,
       albumId: row.album_id,
       albumTitle: row.album_title,
+      artworkUrl: row.artwork_url,
+      artworkId: row.artwork_id,
       primaryArtistId: row.primary_artist_id,
       primaryArtistName: resolvedPrimaryArtistName,
       artistCreditName: formatCreditDisplay(credits, resolvedPrimaryArtistName),
@@ -691,7 +702,7 @@ export class CatalogBrowseService {
     if (!id) return null
     const track = this.getTrackSummary(id)
     const source = track?.sourceLinks[0]
-    if (!track || !source?.available) return null
+    if (!track || !source?.available || !track.availability.playable) return null
     if (source.provider === 'local') {
       const row = this.db.prepare(`SELECT t.id, t.file_path, t.playback_file_path, t.start_offset_ms, t.end_offset_ms, t.cue_sheet_path, al.art_path, al.artwork_id FROM tracks t LEFT JOIN albums al ON al.id = t.album_id WHERE t.id = ? AND t.source = 'local'`).get(source.localId ?? source.sourceId) as { id: string; file_path: string; playback_file_path: string | null; start_offset_ms: number | null; end_offset_ms: number | null; cue_sheet_path: string | null; art_path: string | null; artwork_id: string | null } | undefined
       if (!row || !existsSync(row.playback_file_path ?? row.file_path)) return null
@@ -732,6 +743,6 @@ export class CatalogBrowseService {
     if (!id) return []
     const page = await this.getArtistPage(id)
     const excluded = new Set(options.excludeTrackIds ?? [])
-    return (page?.topTracks ?? []).filter(t => !excluded.has(t.id) && !t.sourceLinks.some(s => excluded.has(s.sourceId)))
+    return (page?.topTracks ?? []).filter(t => t.availability.playable && !excluded.has(t.id) && !t.sourceLinks.some(s => excluded.has(s.sourceId)))
   }
 }

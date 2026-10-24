@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react'
-import type { ReactNode } from 'react'
-import { LYRICS_PROVIDER_LABELS, type LyricsFontSize } from '../../../store/settingsStore'
+import type { LyricsFontSize } from '../../../store/settingsStore'
 import type { ResolvedLyrics } from './LyricsProviderService'
 
 interface LyricsPanelProps {
@@ -9,20 +8,31 @@ interface LyricsPanelProps {
   position: number
   fontSize: LyricsFontSize
   onSeekToTime?: (time: number) => void
-  headerContent?: ReactNode
 }
 
 const FONT_SIZE_CLASS: Record<LyricsFontSize, string> = {
-  small: 'text-lg md:text-xl',
-  medium: 'text-xl md:text-2xl',
-  large: 'text-2xl md:text-[2rem]',
+  small: 'text-xl md:text-2xl',
+  medium: 'text-2xl md:text-[1.75rem]',
+  large: 'text-[1.75rem] md:text-[2.25rem]',
 }
+
+/** Fades the lines in and out at the panel's edges, like Apple Music's lyrics. */
+export const EDGE_FADE_MASK = 'linear-gradient(to bottom, transparent 0, black 12%, black 82%, transparent 100%)'
 
 function lineOpacity(distance: number): number {
   if (distance <= 0) return 1
-  if (distance === 1) return 0.5
-  if (distance === 2) return 0.42
-  return 0.35
+  if (distance === 1) return 0.42
+  return 0.3
+}
+
+/**
+ * Blur grows with distance from the current line, like Apple Music. The
+ * current line stays centred, so the lines leaving at the top and bottom are
+ * the softest. Per line rather than a backdrop band, which shows its edges
+ * against the ambient background.
+ */
+function lineBlur(distance: number): number {
+  return Math.min(2.5, Math.max(0, (distance - 2) * 0.6))
 }
 
 function activeLyricIndex(lyrics: ResolvedLyrics | null, position: number): number {
@@ -43,7 +53,6 @@ export default function LyricsPanel({
   position,
   fontSize,
   onSeekToTime,
-  headerContent,
 }: LyricsPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const lineRefs = useRef<Array<HTMLParagraphElement | null>>([])
@@ -63,79 +72,68 @@ export default function LyricsPanel({
   }, [lyrics])
 
   return (
-    <div className="relative flex h-full min-h-[24rem] flex-col overflow-hidden rounded-[32px] border border-white/8 bg-black/18 shadow-[0_24px_70px_rgba(0,0,0,0.22)] backdrop-blur-2xl">
-      <div className="flex items-center justify-between border-b border-white/8 px-6 py-4">
-        {headerContent ?? (
-          <div>
-            <p className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">Lyrics</p>
-            <p className="mt-1 text-xs text-zinc-400">
-              {lyrics?.providerId ? `Source: ${LYRICS_PROVIDER_LABELS[lyrics.providerId]}` : 'No lyrics source'}
-            </p>
-          </div>
-        )}
-      </div>
+    <div
+      ref={containerRef}
+      className="h-full overflow-y-auto pr-2"
+      style={{ maskImage: EDGE_FADE_MASK, scrollbarWidth: 'none' }}
+    >
+      {loading ? (
+        <div className="flex h-full items-center text-lg font-semibold text-white/40">
+          Finding lyrics…
+        </div>
+      ) : null}
 
-      <div
-        ref={containerRef}
-        className="flex-1 overflow-y-auto px-6 py-6 md:px-8 md:py-8"
-      >
-        {loading ? (
-          <div className="flex h-full items-center justify-center text-sm text-zinc-500">
-            Finding lyrics…
-          </div>
-        ) : null}
+      {!loading && (!lyrics || lyrics.kind === 'none' || (!lyrics.synced && !lyrics.plainText)) ? (
+        <div className="flex h-full items-center text-lg font-semibold text-white/40">
+          No lyrics available
+        </div>
+      ) : null}
 
-        {!loading && (!lyrics || lyrics.kind === 'none' || (!lyrics.synced && !lyrics.plainText)) ? (
-          <div className="flex h-full items-center justify-center text-center text-sm text-zinc-500">
-            No lyrics available
-          </div>
-        ) : null}
-
-        {!loading && lyrics?.synced ? (
-          <div className={`space-y-4 ${FONT_SIZE_CLASS[fontSize]} font-medium leading-[1.35]`}>
-            {lyrics.lines.map((line, index) => {
-              const distance = currentIndex < 0 ? 3 : Math.abs(currentIndex - index)
-              return (
-                <p
-                  key={`${line.time}-${index}-${line.text}`}
-                  ref={(element) => {
-                    lineRefs.current[index] = element
-                  }}
-                  className={`transition-[opacity,transform,color] duration-500 ${
-                    onSeekToTime ? 'cursor-pointer hover:text-white' : ''
-                  }`}
-                  onClick={() => {
-                    if (!onSeekToTime) return
-                    onSeekToTime(line.time)
-                  }}
-                  title={onSeekToTime ? `Jump to ${Math.floor(line.time / 60)}:${Math.floor(line.time % 60).toString().padStart(2, '0')}` : undefined}
-                  style={{
-                    opacity: line.text ? lineOpacity(distance) : 0.18,
-                    color: distance === 0 ? 'rgb(255 255 255)' : 'rgb(228 228 231)',
-                    transform: distance === 0 ? 'scale(1.01)' : 'scale(1)',
-                  }}
-                >
-                  {line.text || '\u00A0'}
-                </p>
-              )
-            })}
-          </div>
-        ) : null}
-
-        {!loading && lyrics && !lyrics.synced && lyrics.plainText ? (
-          <div className={`space-y-3 ${FONT_SIZE_CLASS[fontSize]} leading-[1.5] text-zinc-200/82`}>
-            {lyrics.staticLines.map((line, index) => (
+      {!loading && lyrics?.synced ? (
+        // Padding lets the first and last lines scroll to the centre.
+        <div className={`space-y-5 py-[40cqh] ${FONT_SIZE_CLASS[fontSize]} font-bold leading-[1.25] tracking-tight`}>
+          {lyrics.lines.map((line, index) => {
+            const distance = currentIndex < 0 ? 2 : Math.abs(currentIndex - index)
+            return (
               <p
-                key={`${index}-${line}`}
-                className="transition-opacity duration-300"
-                style={{ opacity: line ? 0.88 : 0.3 }}
+                key={`${line.time}-${index}-${line.text}`}
+                ref={(element) => {
+                  lineRefs.current[index] = element
+                }}
+                className={`origin-left text-white transition-[opacity,transform,filter] duration-500 ease-out ${
+                  onSeekToTime ? 'cursor-pointer hover:opacity-80! hover:blur-none!' : ''
+                }`}
+                onClick={() => {
+                  if (!onSeekToTime) return
+                  onSeekToTime(line.time)
+                }}
+                title={onSeekToTime ? `Jump to ${Math.floor(line.time / 60)}:${Math.floor(line.time % 60).toString().padStart(2, '0')}` : undefined}
+                style={{
+                  opacity: line.text ? lineOpacity(distance) : 0.18,
+                  transform: distance === 0 ? 'scale(1.02)' : 'scale(1)',
+                  filter: lineBlur(distance) > 0 ? `blur(${lineBlur(distance)}px)` : undefined,
+                }}
               >
-                {line || '\u00A0'}
+                {line.text || '\u00A0'}
               </p>
-            ))}
-          </div>
-        ) : null}
-      </div>
+            )
+          })}
+        </div>
+      ) : null}
+
+      {!loading && lyrics && !lyrics.synced && lyrics.plainText ? (
+        <div className={`space-y-3 py-[12cqh] ${FONT_SIZE_CLASS[fontSize]} font-semibold leading-[1.35] tracking-tight text-white/85`}>
+          {lyrics.staticLines.map((line, index) => (
+            <p
+              key={`${index}-${line}`}
+              className="transition-opacity duration-300"
+              style={{ opacity: line ? 1 : 0.3 }}
+            >
+              {line || '\u00A0'}
+            </p>
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }

@@ -5,6 +5,70 @@
   --font-sans: "DM Sans", sans-serif;
 }
 
+/* Accent colour (Settings → Appearance). --accent is set at runtime by
+   applyAccent; the shades are mixed from it so bg-accent-400/10,
+   text-accent-300 etc. follow whatever colour the user picks. */
+:root {
+  --accent: #0a84ff;
+  /* Ends of a gradient accent; equal to --accent for a solid one. */
+  --accent-from: #0a84ff;
+  --accent-to: #0a84ff;
+}
+
+@theme inline {
+  --color-accent-200: color-mix(in oklab, var(--accent) 45%, white);
+  --color-accent-300: color-mix(in oklab, var(--accent) 65%, white);
+  --color-accent-400: color-mix(in oklab, var(--accent) 85%, white);
+  --color-accent-500: var(--accent);
+  --color-accent-600: color-mix(in oklab, var(--accent) 85%, black);
+  --color-accent-900: color-mix(in oklab, var(--accent) 40%, black);
+}
+
+/* Now-playing bars in track lists. They bounce while playing; each cycle
+   starts and ends at the resting height (0.2) that NowPlayingBars eases the
+   bars down to on pause, so pausing and resuming never jump. The delay is
+   positive with backwards fill, so on resume the bars rise one after another. */
+@keyframes now-playing-bar {
+  0%, 100% { transform: scaleY(0.2); }
+  50% { transform: scaleY(1); }
+}
+.now-playing-bar {
+  transform-origin: bottom;
+  transform: scaleY(0.2);
+  animation: now-playing-bar var(--bar-duration, 0.9s) ease-in-out var(--bar-delay, 0s) infinite backwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .now-playing-bar { animation: none !important; transform: scaleY(0.6) !important; }
+}
+
+/* Nothing is on screen while the window is minimized or hidden (see
+   services/windowActivity); freeze animations so they stop costing frames. */
+:root[data-activity="hidden"] *,
+:root[data-activity="hidden"] *::before,
+:root[data-activity="hidden"] *::after {
+  animation-play-state: paused !important;
+}
+
+/* Hue picker for a custom accent: a rainbow track with a round thumb. */
+.hue-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 10px;
+  border-radius: 9999px;
+  background: linear-gradient(to right, hsl(0 90% 58%), hsl(60 90% 58%), hsl(120 90% 58%), hsl(180 90% 58%), hsl(240 90% 58%), hsl(300 90% 58%), hsl(360 90% 58%));
+  outline: none;
+}
+.hue-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 9999px;
+  background: var(--thumb, var(--accent));
+  border: 2px solid white;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+
 @layer base {
   body {
     margin: 0;
@@ -64,6 +128,59 @@
     transform: scaleY(0.58);
     opacity: 0.55;
   }
+}
+
+/* The player floats over the bottom of the content column (inset 12px, 64px
+   tall), so scroll areas behind it get room to scroll their last items clear
+   of it. The sidebar is not covered and needs no clearance. */
+[data-player-clearance] .overflow-y-auto:not([class*="max-h-"]) {
+  padding-bottom: 7rem;
+}
+
+/* The collection glow and artist photo live in the shell (behind the title
+   bar), outside the page's scroll container. A named scroll timeline moves
+   them with the page on the compositor, in the same frame, with no scroll
+   listener. timeline-scope lets the shell see the page's timeline; the range
+   maps 0–720px of scroll to 0–720px of travel (the layer's height). */
+.collection-timeline-scope {
+  timeline-scope: --collection-scroll;
+}
+.collection-scroller {
+  scroll-timeline: --collection-scroll y;
+}
+.collection-glow {
+  animation: collection-glow-scroll linear both;
+  animation-timeline: --collection-scroll;
+  animation-range: 0px 720px;
+}
+@keyframes collection-glow-scroll {
+  to {
+    transform: translateY(-720px);
+  }
+}
+
+/* Page content dissolves into the title bar instead of being cut off by it:
+   the top of the scroll area fades out (showing the glow or black behind it)
+   and a blur band sits over it. Both ramp in with --scroll-fade, set by
+   trackScrollFade, so nothing is blurred at rest. The band is a zero-height
+   block (height cancelled by the negative margin), so it never shifts layout. */
+[data-scroll-fade] .overflow-y-auto:not([class*="max-h-"])::before {
+  content: "";
+  display: block;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: 4rem;
+  margin-bottom: -4rem;
+  pointer-events: none;
+}
+[data-scroll-fade] .overflow-y-auto:not([class*="max-h-"])[data-scrolled] {
+  mask-image: linear-gradient(to bottom, transparent 0, black var(--scroll-fade, 0px));
+}
+[data-scroll-fade] .overflow-y-auto:not([class*="max-h-"])[data-scrolled]::before {
+  opacity: var(--scroll-fade-amount, 0);
+  backdrop-filter: blur(14px);
+  mask-image: linear-gradient(to bottom, black, transparent);
 }
 
 /* Queue button icon: list lines ripple and the note bobs while hovered. */

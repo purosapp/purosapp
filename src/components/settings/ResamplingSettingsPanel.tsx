@@ -36,6 +36,7 @@ import {
 } from '../../services/resamplingSettings'
 import { Segmented, Select, SettingRow, Slider, Switch } from './controls'
 import FirPreviewChart from './FirPreviewChart'
+import { Button } from '../ui'
 
 function formatRate(rate: number): string {
   return `${Number((rate / 1000).toFixed(1))} kHz`
@@ -43,7 +44,7 @@ function formatRate(rate: number): string {
 
 function Group({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
   return (
-    <section className="rounded-lg border border-white/10 bg-zinc-800/30 px-4 py-1">
+    <section className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-1">
       <div className="pt-3 pb-1">
         <h5 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">{title}</h5>
         {description && <p className="text-xs text-zinc-500 mt-0.5 leading-relaxed">{description}</p>}
@@ -310,21 +311,15 @@ function ConvolutionEditor({
       >
         <div className="flex items-center gap-2 min-w-0">
           {fileName && <span className="text-xs text-zinc-300 truncate" title={value.path ?? undefined}>{fileName}</span>}
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="xs"
+            label={value.path ? 'Change…' : 'Choose…'}
             onClick={() => { void choose() }}
-            className="shrink-0 px-2.5 py-1 text-xs rounded-md bg-zinc-800 text-zinc-200 hover:bg-zinc-700 transition-colors"
-          >
-            {value.path ? 'Change…' : 'Choose…'}
-          </button>
+            className="shrink-0"
+          />
           {value.path && (
-            <button
-              type="button"
-              onClick={() => onChange({ ...value, path: null })}
-              className="shrink-0 px-2.5 py-1 text-xs rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-white/5 transition-colors"
-            >
-              Remove
-            </button>
+            <Button variant="ghost" size="xs" label="Remove" onClick={() => onChange({ ...value, path: null })} className="shrink-0" />
           )}
         </div>
       </SettingRow>
@@ -532,13 +527,16 @@ export default function ResamplingSettingsPanel({
       <Group title="Level, bit depth & dither">
         <SettingRow
           title="Headroom"
-          description="Attenuation whenever Puros processes the signal (resampling, requantization, de-emphasis), so inter-sample peaks rebuilt by the filter don't clip. Bit-perfect playback is never attenuated. Signal Path shows the peak and any clipped samples."
+          description="Attenuation whenever Puros processes the signal, so inter-sample peaks rebuilt by the filter don't clip. Auto lowers the level 3 dB when resampling, room correction or Puros Restore is active, and leaves it alone for requantization and de-emphasis, which can't create overs. Bit-perfect playback is never attenuated. Signal Path shows the peak and any clipped samples."
         >
           <Select
             label="Headroom"
-            value={String(value.headroomDb)}
-            onChange={(db) => update({ headroomDb: Number(db) as ResamplingSettings['headroomDb'] })}
-            options={HEADROOM_OPTIONS.map((db) => ({ value: String(db), label: db === 0 ? 'None' : `−${db} dB` }))}
+            value={String(value.headroom)}
+            onChange={(db) => update({ headroom: db === 'auto' ? 'auto' : Number(db) as Exclude<ResamplingSettings['headroom'], 'auto'> })}
+            options={HEADROOM_OPTIONS.map((db) => ({
+              value: String(db),
+              label: db === 'auto' ? 'Auto' : db === 0 ? 'None' : `−${db} dB`,
+            }))}
           />
         </SettingRow>
         <SettingRow title="Output bit depth" description="Auto uses the source depth when the output supports it, else the nearest higher one." stacked>

@@ -1,7 +1,7 @@
 {
   "name": "puros",
   "private": true,
-  "version": "0.0.1-alpha",
+  "version": "0.0.2-alpha",
   "description": "A macOS music player built for audio quality.",
   "author": "jacobbvfx (https://github.com/jacobbvfx)",
   "license": "GPL-3.0-only",
@@ -53,6 +53,7 @@
     "better-sqlite3": "^12.8.0",
     "butterchurn": "^2.6.7",
     "butterchurn-presets": "^2.4.7",
+    "electron-liquid-glass": "^1.1.1",
     "hlslparser-js": "^0.1.1",
     "lucide-react": "^1.48.0",
     "milkdrop-preset-utils": "^0.2.1",

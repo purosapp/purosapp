@@ -29,7 +29,7 @@ describe('sanitizeResamplingSettings', () => {
       fixedSampleRate: 12345,
       upsampling: '16x',
       maxOutputRate: 192000,
-      headroomDb: 4,
+      headroom: 4,
       dither: 'shaped5',
       deemphasis: 'maybe',
       nxFilter: { soxrPreset: 'apodizing', phaseResponse: 0 },
@@ -47,18 +47,25 @@ describe('sanitizeResamplingSettings', () => {
       fixedSampleRate: 48000,
       upsampling: 'off',
       maxOutputRate: 192000,
-      headroomDb: 0,
+      headroom: 'auto',
       dither: 'shaped5',
       deemphasis: 'auto',
     })
     expect(settings.nxFilter).toMatchObject({ soxrPreset: 'apodizing', phaseResponse: 0, soxrPrecision: 28 })
+  })
+
+  it('migrates the old headroomDb: the former default 0 becomes Auto', () => {
+    expect(sanitizeResamplingSettings({ headroomDb: 0 }).headroom).toBe('auto')
+    expect(sanitizeResamplingSettings({ headroomDb: 3 }).headroom).toBe(3)
+    expect(sanitizeResamplingSettings({ headroom: 0, headroomDb: 3 }).headroom).toBe(0)
+    expect(sanitizeResamplingSettings({ headroom: 'auto' }).headroom).toBe('auto')
   })
 })
 
 describe('toNativeResamplerConfig', () => {
   it('maps presets to SoX recipes and leaves fine-tuning at recipe defaults', () => {
     const native = toNativeResamplerConfig(DEFAULT_RESAMPLING)
-    expect(native).toMatchObject({ engine: 'soxr', dither: 'tpdf', headroomDb: 0 })
+    expect(native).toMatchObject({ engine: 'soxr', dither: 'tpdf', headroomDb: 0, headroomAuto: true })
     expect(native.filter1x).toMatchObject({ recipe: 6, precision: 0, passbandEnd: 0, stopbandBegin: 0, phaseResponse: 50 })
     // Without a separate hi-res filter both slots use the same design.
     expect(native.filterNx).toEqual(native.filter1x)
@@ -76,14 +83,14 @@ describe('toNativeResamplerConfig', () => {
       ...DEFAULT_RESAMPLING,
       soxrPreset: 'apodizing',
       allowAliasing: true,
-      headroomDb: 3,
+      headroom: 3,
       dither: 'shaped9',
       nxFilter: { ...DEFAULT_RESAMPLING, soxrPreset: 'high', phaseResponse: 0, steepFilter: true, allowAliasing: false,
         soxrPrecision: 28, passbandPercent: 91.3, stopbandPercent: 100 },
     })
     expect(native.filter1x).toMatchObject({ recipe: 6, passbandEnd: 0.87, stopbandBegin: 1, allowAliasing: false })
     expect(native.filterNx).toMatchObject({ recipe: 4, phaseResponse: 0, steepFilter: true, passbandEnd: 0 })
-    expect(native).toMatchObject({ headroomDb: 3, dither: 'shaped9' })
+    expect(native).toMatchObject({ headroomDb: 3, headroomAuto: false, dither: 'shaped9' })
   })
 
   it('maps Apple quality to AudioConverter values', () => {
@@ -114,7 +121,7 @@ describe('DSD to PCM', () => {
 
   it('drops an ultrasonic filter at or above the new Nyquist', () => {
     const settings = { ...DEFAULT_RESAMPLING, dsdFilter: 50000 as const, dsdGainDb: 6 as const }
-    expect(resolveDsdConversionOptions(settings, caps([176_400]))).toEqual({ sampleRate: 176_400, filterHz: 50_000, gainDb: 6, precision: 28 })
+    expect(resolveDsdConversionOptions(settings, caps([176_400]))).toEqual({ sampleRate: 176_400, filterHz: 50_000, gainDb: 6 })
     expect(resolveDsdConversionOptions(settings, caps([88_200])).filterHz).toBe(0)
   })
 })

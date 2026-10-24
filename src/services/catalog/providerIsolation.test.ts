@@ -50,6 +50,21 @@ function plugin(provider: string) {
 const id = (providerId: string, entityType: 'artist' | 'album' | 'track', sourceId: string) => sourceEntityId({ providerId, entityType, sourceId })
 
 describe('provider-owned catalog', () => {
+  it('greys tracks a listing marks unplayable and refuses to resolve them until one clears it', async () => {
+    const f = fixture()
+    const provider = plugin('tidal'); f.registry.register(provider)
+    const locked = { ...results('tidal'), tracks: [{ ...results('tidal').tracks[0]!, playable: false, unavailableReason: 'region' }] }
+    await f.ingest.ingestProviderSearchResults(locked)
+    const trackId = id('tidal', 'track', '3')
+    expect(f.browse.getTrackSummary(trackId)?.availability).toMatchObject({ playable: false, unavailableReason: 'region', availableProviderIds: [] })
+    expect(await f.browse.resolvePlayback(trackId)).toBeNull()
+    expect(provider.resolvePlayback).not.toHaveBeenCalled()
+
+    await f.ingest.ingestProviderSearchResults({ ...results('tidal'), tracks: [{ ...results('tidal').tracks[0]!, playable: true }] })
+    expect(f.browse.getTrackSummary(trackId)?.availability).toMatchObject({ playable: true, unavailableReason: null })
+    expect(await f.browse.resolvePlayback(trackId)).toMatchObject({ sourceId: '3', provider: 'tidal' })
+  })
+
   it('keeps identical names, UPCs, ISRCs and source IDs separate', async () => {
     const f = fixture(); await f.ingest.rebuildFromLibrarySources()
     await f.ingest.ingestProviderSearchResults(results('tidal')); await f.ingest.ingestProviderSearchResults(results('apple'))

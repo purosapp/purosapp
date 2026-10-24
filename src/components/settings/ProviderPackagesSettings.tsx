@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { GlassPanel, SOLID_GLASS_TINT } from '../GlassPanel'
 import { useProviderStatusStore } from '../../store/providerStatusStore'
 import type { InstalledProviderPackageInfo, PackageInspectionSummary, RetainedProviderData } from '../../../electron/preload'
 import { describePublisher, describeRelation, describeTrustWarning, needsIncompatibilityConfirmation } from './providerPackageText'
+import { Button } from '../ui'
+import { Switch } from './controls'
 
 /** Long lists (e.g. one sign-in origin per Google country domain) show the rest on demand. */
 const PERMISSION_PREVIEW = 8
@@ -50,9 +54,10 @@ function ConsentDialog({
     }
   }
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6" role="dialog" aria-modal="true" data-testid="provider-package-consent">
-      <div className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-xl bg-zinc-900 p-5 shadow-2xl ring-1 ring-white/10">
+  // At the document root: the settings modal's glass would otherwise contain and clip it.
+  return createPortal(
+    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 p-6" role="dialog" aria-modal="true" data-testid="provider-package-consent">
+      <GlassPanel radius={12} tint={SOLID_GLASS_TINT} className="relative max-h-[85vh] w-full max-w-lg overflow-y-auto border border-transparent p-5">
         <p className="text-xs text-zinc-500">{describeRelation(summary)}</p>
         <h4 className="mt-1 text-base font-semibold text-zinc-100">{summary.displayName} <span className="text-sm font-normal text-zinc-500">v{summary.version}</span></h4>
         {isUpdate && !alreadyInstalled && <p className="mt-2 text-xs text-zinc-300">v{summary.installedVersion} → v{summary.version}. Your library, playlists, settings and sign-in are kept.</p>}
@@ -69,7 +74,7 @@ function ConsentDialog({
 
         <ul className="mt-4 space-y-2" data-testid="provider-package-warnings">
           {summary.trust.warnings.map((warning) => (
-            <li key={warning} className="rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-100">{describeTrustWarning(warning, summary)}</li>
+            <li key={warning} className="rounded-xl bg-amber-500/10 px-3 py-2 text-xs text-amber-100">{describeTrustWarning(warning, summary)}</li>
           ))}
         </ul>
 
@@ -87,23 +92,24 @@ function ConsentDialog({
         )}
 
         <div className="mt-5 flex justify-end gap-2">
-          <button type="button" disabled={installing} onClick={onCancel} className="px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-40">Cancel</button>
-          <button
-            type="button"
+          <Button variant="ghost" size="sm" label="Cancel" disabled={installing} onClick={onCancel} />
+          <Button
+            variant="secondary"
+            size="sm"
+            label={installing ? (isUpdate ? 'Updating…' : 'Installing…') : alreadyInstalled ? 'Done' : isUpdate ? 'Update' : 'Install'}
             disabled={(!acknowledged && !alreadyInstalled) || installing}
             onClick={() => {
               if (needsIncompatibilityConfirmation(summary)) setConfirmIncompatible(true)
               else void install()
             }}
-            className="rounded-md bg-white/10 px-3 py-1.5 text-xs text-zinc-100 hover:bg-white/15 disabled:opacity-40"
             data-testid="provider-package-install"
-          >{installing ? (isUpdate ? 'Updating…' : 'Installing…') : alreadyInstalled ? 'Done' : isUpdate ? 'Update' : 'Install'}</button>
+          />
         </div>
-      </div>
+      </GlassPanel>
 
       {confirmIncompatible && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6" role="alertdialog" aria-modal="true" data-testid="provider-package-incompatible">
-          <div className="w-full max-w-sm rounded-xl bg-zinc-900 p-5 shadow-2xl ring-1 ring-amber-400/30">
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 p-6" role="alertdialog" aria-modal="true" data-testid="provider-package-incompatible">
+          <GlassPanel radius={12} tint={SOLID_GLASS_TINT} className="relative w-full max-w-sm border border-amber-400/30 p-5">
             <h4 className="text-sm font-semibold text-amber-200">This plugin version may be incompatible</h4>
             <p className="mt-2 text-xs text-zinc-300">
               {summary.relation === 'downgrade'
@@ -112,19 +118,21 @@ function ConsentDialog({
               {' '}It may not work with this version of Puros or with data saved by the installed version. Your provider data is kept either way.
             </p>
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setConfirmIncompatible(false)} className="px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200">Cancel</button>
-              <button
-                type="button"
+              <Button variant="ghost" size="sm" label="Cancel" onClick={() => setConfirmIncompatible(false)} />
+              <Button
+                variant="secondary"
+                size="sm"
+                label={isUpdate ? 'Update anyway' : 'Install anyway'}
                 disabled={installing}
                 onClick={() => { setConfirmIncompatible(false); void install() }}
-                className="rounded-md bg-amber-500/20 px-3 py-1.5 text-xs text-amber-100 hover:bg-amber-500/30"
                 data-testid="provider-package-install-anyway"
-              >{isUpdate ? 'Update anyway' : 'Install anyway'}</button>
+              />
             </div>
-          </div>
+          </GlassPanel>
         </div>
       )}
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -155,7 +163,7 @@ function PackageRow({ item, onChanged, onMessage, onUpdate, choosing }: {
     : item.signature === 'publisher' ? `Publisher ${item.publisherFingerprint}` : 'Unsigned'
 
   return (
-    <div className="rounded-lg bg-zinc-800/60 p-4" data-testid={`provider-package-row-${item.providerId}`}>
+    <div className="rounded-2xl bg-white/[0.03] p-4" data-testid={`provider-package-row-${item.providerId}`}>
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <p className="text-sm font-medium text-zinc-100">{item.displayName} <span className="text-xs font-normal text-zinc-500">v{item.version}</span></p>
@@ -165,37 +173,37 @@ function PackageRow({ item, onChanged, onMessage, onUpdate, choosing }: {
           </p>
           {item.lastError && <p className="mt-1 text-xs text-red-300">{item.lastError}</p>}
         </div>
-        <label className="flex shrink-0 items-center gap-2 text-xs text-zinc-400">
-          <input
-            type="checkbox"
-            checked={item.enabled}
-            disabled={busy || choosing}
-            onChange={(event) => { void run(() => window.puros.providerPackages.setEnabled(item.providerId, event.target.checked)) }}
-            data-testid={`provider-package-toggle-${item.providerId}`}
-          />
-          Enabled
-        </label>
+        <Switch
+          checked={item.enabled}
+          disabled={busy || choosing}
+          onChange={(enabled) => { void run(() => window.puros.providerPackages.setEnabled(item.providerId, enabled)) }}
+          label={`Enable ${item.displayName}`}
+          title={item.enabled ? 'Enabled' : 'Disabled'}
+          testId={`provider-package-toggle-${item.providerId}`}
+        />
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-4 border-t border-white/5 pt-3">
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="sm"
+          label="Update from file…"
           disabled={busy || choosing}
           onClick={onUpdate}
-          className="rounded-md bg-white/10 px-3 py-1.5 text-xs text-zinc-100 hover:bg-white/15 disabled:opacity-40"
           data-testid={`provider-package-update-${item.providerId}`}
-        >Update from file…</button>
+        />
         {removeConfirm ? (
           <div className="flex items-center justify-between gap-3">
             <p className="text-xs text-zinc-300">Remove this provider&apos;s code? Its library, settings, sessions and cache stay until you remove its data.</p>
             <div className="flex shrink-0 gap-2">
-              <button type="button" onClick={() => setRemoveConfirm(false)} className="px-2 py-1 text-xs text-zinc-400">Cancel</button>
-              <button
-                type="button"
+              <Button variant="ghost" size="xs" label="Cancel" onClick={() => setRemoveConfirm(false)} />
+              <Button
+                variant="danger"
+                size="xs"
+                label="Remove code"
                 disabled={busy}
                 onClick={() => { void run(() => window.puros.providerPackages.removeCode(item.providerId)) }}
-                className="rounded px-2 py-1 text-xs bg-red-500/20 text-red-200 disabled:opacity-50"
                 data-testid={`provider-package-remove-confirm-${item.providerId}`}
-              >Remove code</button>
+              />
             </div>
           </div>
         ) : (
@@ -230,7 +238,7 @@ function RetainedDataRow({ entry, name, installed, onRemoved }: {
   const [confirming, setConfirming] = useState(false)
   const [removing, setRemoving] = useState(false)
   return (
-    <div className="rounded-lg bg-zinc-800/40 p-4" data-testid={`retained-data-row-${entry.providerId}`}>
+    <div className="rounded-2xl bg-white/[0.03] p-4" data-testid={`retained-data-row-${entry.providerId}`}>
       <p className="text-sm text-zinc-200">{name} <span className="text-xs text-zinc-500">{installed ? 'installed, not running' : 'code not installed'}</span></p>
       <p className="mt-1 text-xs text-zinc-500">{describeRetained(entry)}</p>
       <div className="mt-3">
@@ -238,9 +246,11 @@ function RetainedDataRow({ entry, name, installed, onRemoved }: {
           <div className="flex items-center justify-between gap-3">
             <p className="text-xs text-red-200">Delete this provider&apos;s imported library, sign-in, settings and cache? Cached audio cannot be recovered.</p>
             <div className="flex shrink-0 gap-2">
-              <button type="button" onClick={() => setConfirming(false)} className="px-2 py-1 text-xs text-zinc-400">Cancel</button>
-              <button
-                type="button"
+              <Button variant="ghost" size="xs" label="Cancel" onClick={() => setConfirming(false)} />
+              <Button
+                variant="danger"
+                size="xs"
+                label={removing ? 'Removing…' : 'Remove all data'}
                 disabled={removing}
                 onClick={() => {
                   setRemoving(true)
@@ -249,9 +259,8 @@ function RetainedDataRow({ entry, name, installed, onRemoved }: {
                     .catch((error: unknown) => onRemoved(`Could not remove ${name} data: ${error instanceof Error ? error.message : String(error)}`))
                     .finally(() => setRemoving(false))
                 }}
-                className="rounded px-2 py-1 text-xs bg-red-500/20 text-red-200 disabled:opacity-50"
                 data-testid={`retained-data-remove-confirm-${entry.providerId}`}
-              >{removing ? 'Removing…' : 'Remove all data'}</button>
+              />
             </div>
           </div>
         ) : (
@@ -328,27 +337,28 @@ export default function ProviderPackagesSettings() {
   return (
     <div>
       <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Installed provider packages</h3>
-        <button
-          type="button"
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400">Installed provider packages</h3>
+        <Button
+          variant="secondary"
+          size="sm"
+          label={choosing ? 'Checking package…' : 'Install provider…'}
           disabled={choosing}
           onClick={() => { void choose() }}
-          className="rounded-md bg-white/10 px-3 py-1.5 text-xs text-zinc-100 hover:bg-white/15 disabled:opacity-40"
           data-testid="install-provider-button"
-        >{choosing ? 'Checking package…' : 'Install provider…'}</button>
+        />
       </div>
-      {message && <p className="mb-3 rounded-md bg-zinc-800/60 px-3 py-2 text-xs text-zinc-300" data-testid="provider-package-message">{message}</p>}
+      {message && <p className="mb-3 rounded-xl bg-white/[0.03] px-3 py-2 text-xs text-zinc-300" data-testid="provider-package-message">{message}</p>}
       <div className="space-y-3">
         {packages.map((item) => <PackageRow key={item.providerId} item={item} onChanged={refresh} onMessage={setMessage} onUpdate={() => { void choose(item) }} choosing={choosing} />)}
         {packages.length === 0 && (
-          <p className="rounded-lg bg-zinc-800/40 px-4 py-3 text-xs text-zinc-500">
+          <p className="rounded-2xl bg-white/[0.03] px-4 py-3 text-xs text-zinc-500">
             No provider packages installed. Packages are ZIP files built with <span className="font-mono">npm run providers:pack</span>.
           </p>
         )}
       </div>
       {retained.length > 0 && (
         <div className="mt-6">
-          <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-zinc-500">Data from inactive providers</h3>
+          <h3 className="mb-3 text-[11px] uppercase tracking-[0.22em] text-zinc-400">Data from inactive providers</h3>
           <div className="space-y-3">
             {retained.map((entry) => {
               const installedPackage = packages.find((item) => item.providerId === entry.providerId)

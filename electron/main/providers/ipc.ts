@@ -5,6 +5,8 @@ import { ProviderLibrarySyncCoordinator } from './librarySync'
 import { validateInvokeInput } from './validation'
 import { getDb } from '../db'
 import { emitLibraryCatalogChanged } from '../rendererBridge'
+import { unavailableReasonFromProviderError } from '../../../src/utils/trackAvailability'
+import { setProviderTrackUnavailableReason } from './catalogData'
 import {
   deleteProviderSecret,
   deleteProviderSetting,
@@ -15,6 +17,30 @@ import {
   setProviderSecret,
   setProviderSetting,
 } from './config'
+
+function isPlaybackResolve(capability: string, method: string): boolean {
+  return (capability === 'playback.resolve' && method === 'resolve')
+    || (capability === 'playback.prefetch' && method === 'prefetch')
+}
+
+/** Playback is the last word on whether the account can stream a track. */
+function recordPlaybackAvailability(
+  providerId: string,
+  request: unknown,
+  result: Awaited<ReturnType<ProviderRegistry['invoke']>>,
+): void {
+  const sourceId = (request as { sourceId?: unknown } | null)?.sourceId
+  if (typeof sourceId !== 'string' || !sourceId) return
+  // A prefetch may decline with null; only a returned artifact proves the track plays.
+  if (result.ok && result.value == null) return
+  const reason = result.ok ? null : unavailableReasonFromProviderError(result.error)
+  if (!result.ok && !reason) return
+  try {
+    if (setProviderTrackUnavailableReason(getDb(), providerId, sourceId, reason)) emitLibraryCatalogChanged()
+  } catch (error) {
+    console.warn(`[Puros][Provider:${providerId}] Could not record track availability:`, error)
+  }
+}
 
 export function registerProviderIpc(
   registry: ProviderRegistry,
@@ -50,6 +76,9 @@ export function registerProviderIpc(
         input.method,
         input.args as ProviderValueV1[],
       )
+      if (isPlaybackResolve(input.capability, input.method)) {
+        recordPlaybackAvailability(input.providerId, input.args[0], result)
+      }
       // A login step that did not end signed in (e.g. one that only opens a browser page) has nothing to sync yet.
       const signedIn = result.ok && (result.value as { status?: { authenticated?: unknown } } | undefined)?.status?.authenticated !== false
       if (signedIn && input.capability === 'auth' && input.method === 'login' && librarySync.isHostManaged(input.providerId)) {

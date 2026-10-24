@@ -51,7 +51,7 @@ type DiscordActivity = {
 const LISTENING_ACTIVITY_TYPE = 2
 const RECONNECT_COOLDOWN_MS = 15_000
 const POSITION_RESYNC_DRIFT_SECONDS = 3
-const PUROS_DOWNLOAD_URL = 'https://github.com/purosapp'
+const PUROS_DOWNLOAD_URL = 'https://getpuros.app'
 const PUROS_DISCORD_CLIENT_ID = '1491520035292708894'
 
 function clampDuration(seconds: number) {

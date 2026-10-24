@@ -1,11 +1,12 @@
-import { ArrowUpDown, Music } from 'lucide-react'
+import { ArrowUpDown } from 'lucide-react'
 import { useCatalogStore } from '../store/catalogStore'
 
 import { useEffect, useMemo, useState, useCallback } from 'react'
-import type { CatalogAlbumSummary, CatalogSourceLink } from '../services/catalog/types'
+import type { CatalogAlbumSummary } from '../services/catalog/types'
 import { useAppShellStore } from '../store/appShellStore'
 import { artworkUrl } from '../utils/artworkUrl'
-import ProviderBadge from './ProviderBadge'
+import { MediaGrid, MediaGridSkeleton, MediaTile, SourceBadges } from './MediaTile'
+import { Button, PageHeader, PageStatus, SearchField } from './ui'
 import PinButton from './PinButton'
 import { usePinsStore } from '../store/pinsStore'
 
@@ -23,15 +24,6 @@ function resolveArtwork(album: CatalogAlbumSummary): string | null {
   return artworkUrl(album.artworkId, null) ?? album.artworkUrl ?? null
 }
 
-function dedupeSourcesByProvider(sourceLinks: CatalogSourceLink[]): CatalogSourceLink[] {
-  const seen = new Set<string>()
-  return sourceLinks.filter((source) => {
-    if (seen.has(source.provider)) return false
-    seen.add(source.provider)
-    return true
-  })
-}
-
 function albumArtist(album: CatalogAlbumSummary): string {
   return album.artistCreditName ?? album.primaryArtistName ?? 'Unknown Artist'
 }
@@ -47,68 +39,18 @@ export function AlbumCard({
   pinned?: boolean
   onTogglePin?: () => void
 }) {
-  const cover = resolveArtwork(album)
-  const sources = dedupeSourcesByProvider(album.sourceLinks)
-
+  const playAlbum = useCatalogStore((s) => s.playAlbum)
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onOpen}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault()
-          onOpen()
-        }
-      }}
-      className="group flex flex-col text-left focus:outline-none"
-    >
-      {/* Cover */}
-      <div className="relative w-full aspect-square rounded-lg overflow-hidden bg-zinc-800 mb-2">
-        {cover ? (
-          <img
-            src={cover}
-            className="w-full h-full object-cover"
-            loading="lazy"
-            onError={(e) => {
-              const el = e.currentTarget as HTMLImageElement
-              el.style.display = 'none'
-            }}
-          />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center">
-            <Music className="w-10 h-10 text-zinc-600" strokeWidth={1.5} />
-          </div>
-        )}
-        <div className="absolute inset-0 rounded-lg ring-1 ring-inset ring-white/5 group-hover:ring-white/20 transition-shadow" />
-        {onTogglePin && (
-          <div className="absolute top-1.5 left-1.5">
-            <PinButton pinned={!!pinned} onToggle={onTogglePin} />
-          </div>
-        )}
-        {sources.length > 0 && (
-          <div className="absolute top-1.5 right-1.5 flex flex-wrap justify-end gap-1">
-            {sources.map((source, index) => (
-              <ProviderBadge
-                key={`${source.provider}:${source.sourceId ?? 'missing'}:${index}`}
-                provider={source.provider}
-                compact
-                iconOnly
-                className={source.inLibrary ? 'border-white/15 bg-black/50' : 'border-white/10 bg-black/40'}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-
-      <p className="text-sm text-zinc-200 truncate w-full group-hover:text-white transition-colors leading-tight">
-        {album.title}
-      </p>
-      <p className="text-xs text-zinc-500 truncate w-full mt-0.5">
-        {albumArtist(album)}
-        {album.year ? ` · ${album.year}` : ''}
-      </p>
-    </div>
+    <MediaTile
+      kind="album"
+      title={album.title}
+      subtitle={`${albumArtist(album)}${album.year ? ` · ${album.year}` : ''}`}
+      artworkSrc={resolveArtwork(album)}
+      onOpen={onOpen}
+      onPlay={() => { void playAlbum(album.id) }}
+      topLeft={onTogglePin ? <PinButton pinned={!!pinned} onToggle={onTogglePin} /> : undefined}
+      topRight={<SourceBadges sourceLinks={album.sourceLinks} />}
+    />
   )
 }
 
@@ -166,49 +108,31 @@ export default function AlbumsView() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-4 px-6 pt-6 pb-3 shrink-0">
-        <div>
-          <h1 className="text-xl font-semibold text-zinc-100">Albums</h1>
-          <p className="text-xs text-zinc-500 mt-0.5">
-            {isLoading ? 'Loading…' : `${albums.length} ${albums.length === 1 ? 'album' : 'albums'} in this provider`}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <input
-            type="text"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter albums"
-            className="w-44 px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-white/20"
-          />
-          <button
-            onClick={cycleSort}
-            title={`Sort: ${SORT_LABELS[sort]}`}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-zinc-400 border border-white/10 hover:text-zinc-200 hover:bg-white/5 transition-colors"
-          >
-            <ArrowUpDown className="w-3.5 h-3.5" />
-            {SORT_LABELS[sort]}
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        kicker="Library"
+        title="Albums"
+        subtitle={isLoading ? 'Loading…' : `${albums.length} ${albums.length === 1 ? 'album' : 'albums'} in this provider`}
+        actions={(
+          <>
+            <SearchField value={filter} onChange={setFilter} placeholder="Filter albums" />
+            <Button icon={ArrowUpDown} label={SORT_LABELS[sort]} title={`Sort: ${SORT_LABELS[sort]}`} onClick={cycleSort} />
+          </>
+        )}
+      />
 
-      {/* Grid */}
       {isLoading && albums.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center">
-          <p className="text-sm text-zinc-500">Loading…</p>
+        <div className="flex-1 overflow-y-auto px-6 pb-6">
+          <MediaGridSkeleton count={12} />
         </div>
       ) : visible.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center px-6">
-          <p className="text-sm text-zinc-500 text-center">
-            {filter.trim()
-              ? `No albums match “${filter.trim()}”.`
-              : 'No albums in your library yet. Add music or sync a provider to get started.'}
-          </p>
-        </div>
+        <PageStatus
+          fill
+          title={filter.trim() ? `No albums match “${filter.trim()}”.` : 'No albums in your library yet.'}
+          hint={filter.trim() ? undefined : 'Add music or sync a provider to get started.'}
+        />
       ) : (
         <div className="flex-1 overflow-y-auto px-6 pb-6">
-          <div className="grid grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-x-4 gap-y-6">
+          <MediaGrid>
             {visible.map((album) => (
               <AlbumCard
                 key={album.id}
@@ -218,7 +142,7 @@ export default function AlbumsView() {
                 onTogglePin={() => togglePin('albums', album.id)}
               />
             ))}
-          </div>
+          </MediaGrid>
         </div>
       )}
     </div>

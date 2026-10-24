@@ -44,6 +44,16 @@ function getStreamingAudioCacheLimitBytes(): number {
   return Math.floor(getStreamingAudioCacheLimitGb() * 1024 * 1024 * 1024)
 }
 
+/** Files pinned by playlist downloads; trimming and cache clearing leave them alone. */
+export function getDownloadedAudioFilePaths(): Set<string> {
+  const rows = getDb().prepare(`SELECT file_path FROM offline_tracks`).all() as Array<{ file_path: string }>
+  return new Set(rows.map((row) => row.file_path))
+}
+
+function isDownloadedAudioFile(filePath: string): boolean {
+  return getDb().prepare(`SELECT 1 FROM offline_tracks WHERE file_path = ? LIMIT 1`).get(filePath) != null
+}
+
 function isLosslessStreamingQualityKey(qualityKey: string | null | undefined): boolean {
   const normalized = String(qualityKey ?? '').trim().toUpperCase()
   return normalized === 'MAX' || normalized === 'HI_RES' || normalized === 'HI_RES_LOSSLESS' || normalized === 'LOSSLESS'
@@ -181,10 +191,12 @@ export function getCachedStreamingAudio(provider: string, sourceId: string, qual
       DELETE FROM streaming_audio_cache
       WHERE provider = ? AND source_id = ? AND quality_key = ?
     `).run(provider, row.source_id, qualityKey)
-    try {
-      fs.unlinkSync(row.file_path)
-    } catch {
-      // Best-effort cache cleanup.
+    if (!isDownloadedAudioFile(row.file_path)) {
+      try {
+        fs.unlinkSync(row.file_path)
+      } catch {
+        // Best-effort cache cleanup.
+      }
     }
     return null
   }
@@ -267,9 +279,11 @@ function trimStreamingAudioCache(provider?: string) {
     GROUP BY file_path
     ORDER BY last_used_at DESC
   `).all(...(provider ? [provider] : [])) as Array<{ file_path: string; last_used_at: number | null }>
+  const downloadedPaths = getDownloadedAudioFilePaths()
+  const evictableRows = rows.filter((row) => !downloadedPaths.has(row.file_path))
 
   const stalePaths: string[] = []
-  for (const row of rows) {
+  for (const row of evictableRows) {
     const size = getStreamingAudioFileSize(row.file_path)
     if (!size) {
       stalePaths.push(row.file_path)
@@ -282,7 +296,7 @@ function trimStreamingAudioCache(provider?: string) {
   }
 
   let runningTotal = 0
-  rows.forEach((row, index) => {
+  evictableRows.forEach((row, index) => {
     if (stalePaths.includes(row.file_path)) return
     const size = getStreamingAudioFileSize(row.file_path)
     if (!size) return
@@ -316,12 +330,14 @@ export function scheduleStreamingAudioCacheTrim(provider?: string) {
 }
 
 export function getStreamingAudioCacheStats(provider?: string) {
-  const rows = getDb().prepare(`
+  const downloadedPaths = getDownloadedAudioFilePaths()
+  const rows = (getDb().prepare(`
     SELECT file_path
     FROM streaming_audio_cache
     ${provider ? 'WHERE provider = ?' : ''}
     GROUP BY file_path
-  `).all(...(provider ? [provider] : [])) as Array<{ file_path: string }>
+  `).all(...(provider ? [provider] : [])) as Array<{ file_path: string }>)
+    .filter((row) => !downloadedPaths.has(row.file_path))
 
   let totalBytes = 0
   let fileCount = 0
@@ -348,6 +364,52 @@ export function getStreamingAudioCacheStats(provider?: string) {
     limitGb: getStreamingAudioCacheLimitGb(),
     limitBytes: getStreamingAudioCacheLimitBytes(),
   }
+}
+
+/** Clears the streaming audio cache but keeps files pinned by playlist downloads. */
+export function clearStreamingAudioCacheExceptDownloads() {
+  const downloadedPaths = getDownloadedAudioFilePaths()
+  const cacheRows = getDb().prepare(`SELECT DISTINCT file_path FROM streaming_audio_cache`).all() as Array<{ file_path: string }>
+  const removeCacheRows = getDb().prepare(`DELETE FROM streaming_audio_cache WHERE file_path = ?`)
+  getDb().transaction(() => {
+    for (const row of cacheRows) {
+      if (!downloadedPaths.has(row.file_path)) removeCacheRows.run(row.file_path)
+    }
+  })()
+  const root = path.join(app.getPath('userData'), 'cache', 'streaming-audio')
+  if (downloadedPaths.size === 0) {
+    removePathIfExists(root)
+    return
+  }
+  // Pinned paths are stored resolved, so walk the resolved root.
+  try {
+    removeUnpinnedEntries(fs.realpathSync.native(root), downloadedPaths)
+  } catch {
+    // Nothing cached yet.
+  }
+}
+
+/** Removes everything under `dir` except the pinned files; returns whether anything was kept. */
+function removeUnpinnedEntries(dir: string, pinnedPaths: Set<string>): boolean {
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return false
+  }
+  let keptAny = false
+  for (const entry of entries) {
+    const entryPath = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      if (removeUnpinnedEntries(entryPath, pinnedPaths)) keptAny = true
+      else removePathIfExists(entryPath)
+    } else if (pinnedPaths.has(entryPath)) {
+      keptAny = true
+    } else {
+      removePathIfExists(entryPath)
+    }
+  }
+  return keptAny
 }
 
 export function removePathIfExists(targetPath: string) {

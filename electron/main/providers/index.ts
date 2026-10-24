@@ -68,8 +68,8 @@ export function registerProviderIpcHandlers(
   }
 }
 
-export function syncHostManagedLibraries(): Promise<number> {
-  return providerLibrarySync.syncReadyManagedProviders()
+export function syncHostManagedLibraries(options?: { skipSyncedWithinMs?: number }): Promise<number> {
+  return providerLibrarySync.syncReadyManagedProviders(options)
 }
 
 export function getActiveProviderLibrarySyncPromise(): Promise<unknown> | null {

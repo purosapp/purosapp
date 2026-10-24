@@ -8,9 +8,9 @@ import type { PlaylistFolderInfo, PlaylistInfo } from '../../electron/preload'
 
 export type { PlaylistFolderInfo, PlaylistInfo }
 
-type SortOrder = 'name-asc' | 'name-desc' | 'date-desc' | 'date-asc'
+export type SortOrder = 'name-asc' | 'name-desc' | 'date-desc' | 'date-asc'
 
-const SORT_CYCLE: SortOrder[] = ['name-asc', 'name-desc', 'date-desc', 'date-asc']
+export const SORT_ORDERS: SortOrder[] = ['name-asc', 'name-desc', 'date-desc', 'date-asc']
 
 export const SORT_LABELS: Record<SortOrder, string> = {
   'name-asc':  'A → Z',
@@ -45,7 +45,7 @@ interface PlaylistState {
   renameFolder: (id: number, newName: string) => Promise<void>
   deleteFolder: (id: number) => Promise<void>
   movePlaylistToFolder: (playlistId: number, folderId?: number | null) => Promise<void>
-  cycleSortOrder: () => void
+  setSortOrder: (order: SortOrder) => void
 }
 
 export const usePlaylistStore = create<PlaylistState>((set, get) => ({
@@ -110,9 +110,7 @@ export const usePlaylistStore = create<PlaylistState>((set, get) => ({
     await get().loadPlaylists()
   },
 
-  cycleSortOrder: () => {
-    const { sortOrder, playlists } = get()
-    const next = SORT_CYCLE[(SORT_CYCLE.indexOf(sortOrder) + 1) % SORT_CYCLE.length]
-    set({ sortOrder: next, playlists: sortPlaylists(playlists, next) })
+  setSortOrder: (order) => {
+    set({ sortOrder: order, playlists: sortPlaylists(get().playlists, order) })
   },
 }))

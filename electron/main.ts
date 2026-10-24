@@ -15,26 +15,28 @@ import { registerCatalogIpc } from './main/catalog/ipc'
 import { registerLibraryIpc } from './main/library/ipc'
 import { registerPlaylistsIpc } from './main/playlists/ipc'
 import { registerLastFmIpc } from './main/lastfm/ipc'
+import { registerDownloadsIpc } from './main/downloads/ipc'
 import { registerLyricsIpc } from './main/lyrics/ipc'
 import { registerSettingsIpc } from './main/settings/ipc'
 import { clearAutoEQMemoryCache } from './main/audio/autoeq'
 import { clearPendingLastFmAuthToken, handleLastFmCallbackUrl, registerLastFmProtocolHandler } from './main/lastfm'
 import { configureLyricsProviders } from './main/lyrics/providers'
 import { getAudioEngine, openSystemSoundOutputPicker } from './main/audio/engine'
-import { configureLocalPlayback } from './main/audio/localPlayback'
+import { configureLocalPlayback, removeLegacyDsdCache } from './main/audio/localPlayback'
 import { startDeviceChangeWatcher } from './main/audio/devices'
 import { getStreamingAudioCacheStats, scheduleStreamingAudioCacheTrim } from './main/streamingCache'
 import { configureLibraryScanner, parseTrackFile, rescanWatchFolders, resetLibraryScanner } from './main/library/scanner'
 import { ensureArtistProfile, namesLikelyMatch, titlesLikelyMatch } from './main/metadata/bios'
 import { clearMetadataCacheOnly, configureMetadataArtwork, resetMetadataBackfills } from './main/metadata/artwork'
 import { ensureCatalogReady, getCatalogRegistry, initCatalogServices, rebuildCatalogGraphFromSources, rebuildUnifiedSearchIndex, resetCatalogServices } from './main/catalog/services'
-import { enrichMissingGenreProviderArtists, preserveOfficialProviderArtistGenresFromCatalog } from './main/catalog/genres'
+import { preserveOfficialProviderArtistGenresFromCatalog } from './main/catalog/genres'
 import { shutdownDiscordPresence, syncDiscordPresenceSettingsFromDb } from './main/nowPlaying'
 import { clearAppCaches, registerReset, registerShutdown, resetAppData } from './main/maintenance'
 import { registerAppIpc } from './main/appIpc'
 import { registerPrivilegedSchemes, registerProtocolHandlers } from './main/protocols'
-import { buildAppMenu, createWindow, createWindowIfNeeded, openVisualizerWindow, setMacDevDockIcon } from './main/windows'
+import { buildAppMenu, createWindow, createWindowIfNeeded, openVisualizerWindow, closeVisualizerWindow, setMacDevDockIcon } from './main/windows'
 import { registerMediaKeyShortcuts, registerNativeRemoteCommandBridge, unregisterMediaKeyShortcuts } from './main/mediaKeys'
+import { clearDockMenu } from './main/dockMenu'
 import { configureProviderMetadataSettings } from './main/settings/store'
 import {
   createCatalogProviderAdapters,
@@ -70,6 +72,8 @@ if (process.env.PUROS_RENDERER_SMOKE === '1' && process.env.PUROS_RENDERER_SMOKE
 
 process.env.APP_ROOT = path.join(__dirname, '..')
 
+const BOOT_LIBRARY_SYNC_INTERVAL_MS = 6 * 60 * 60_000
+
 loadMainProcessEnv(getSelectedProviderIds())
 configureDatabase({ backfillArtworkCache })
 configureLyricsProviders({ titlesLikelyMatch, namesLikelyMatch })
@@ -90,8 +94,9 @@ configureProviderLibrarySync({
   afterSync: async (providerId) => {
     rebuildUnifiedSearchIndex()
     preserveOfficialProviderArtistGenresFromCatalog(providerId)
+    // Artist genre enrichment (one provider lookup per artist) stays off until
+    // genres work reliably; it made every boot sync crawl.
     await rebuildCatalogGraphFromSources()
-    await enrichMissingGenreProviderArtists(providerId)
     sendToRenderer('playlists:changed')
     sendToRenderer('library:changed')
     sendToRenderer('catalog:changed')
@@ -144,6 +149,8 @@ function registerIpcHandlers() {
 
   registerPlaylistsIpc({ get win() { return getMainWindow() } })
 
+  registerDownloadsIpc()
+
   registerLastFmIpc()
 
   registerLyricsIpc()
@@ -195,6 +202,7 @@ function registerIpcHandlers() {
   registerAppIpc({
     getMainWindow,
     openVisualizerWindow,
+    closeVisualizerWindow,
     clearAppCaches: () => {
       clearAppCaches()
       emitLibraryCatalogChanged()
@@ -252,6 +260,8 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
+  // Playback lived in that window; the Dock keeps only its own items until a new one reports in.
+  clearDockMenu()
   setMainWindow(null)
 })
 
@@ -317,9 +327,14 @@ app.whenReady().then(async () => {
     await ensureCatalogReady()
   })
 
+  // DSD is now decoded by the engine as it plays; converted WAVs are no longer used.
+  runPlaybackIdleTask('legacy DSD cache cleanup', removeLegacyDsdCache)
+
   runPlaybackIdleTask('provider library sync', async () => {
     try {
-      await syncHostManagedLibraries()
+      // Libraries synced in the last few hours are left alone; signing in and
+      // adding to the library still sync right away.
+      await syncHostManagedLibraries({ skipSyncedWithinMs: BOOT_LIBRARY_SYNC_INTERVAL_MS })
     } catch (error) {
       console.warn('[Puros][Providers] Background library sync failed:', error)
     }

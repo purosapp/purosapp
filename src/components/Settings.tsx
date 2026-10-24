@@ -8,23 +8,30 @@ import {
   type LyricsFontSize,
   type LyricsProviderId,
   type ResumeRewindSeconds,
+  type SeekBarStyle,
+  type NowPlayingArtworkStyle,
 } from '../store/settingsStore'
 import { useLibraryStore } from '../store/libraryStore'
+import { GlassPanel, SOLID_GLASS_TINT } from './GlassPanel'
 import { clearRecentlyPlayedHistory } from '../services/homeRecents'
 import LastFmSettings from './settings/LastFmSettings'
 import AudioSetupSettings from './settings/AudioSetupSettings'
+import AppearanceSettings from './settings/AppearanceSettings'
+import DownloadsSettings from './settings/DownloadsSettings'
 import type { SettingsTab } from '../utils/openSettings'
 import ProviderPackagesSettings from './settings/ProviderPackagesSettings'
-import { Segmented } from './settings/controls'
+import { Segmented, Switch } from './settings/controls'
 import { useVisualizerStore } from '../store/visualizerStore'
 import { importMilkPreset } from '../renderer/visualizer/importPreset'
 import { useProviderStatusStore } from '../store/providerStatusStore'
+import { NOW_PLAYING_TAB_IDS, NOW_PLAYING_TAB_LABELS } from '../services/nowPlayingTabs'
 import type {
   ProviderDescriptorV1,
   ProviderFormSettingV1,
   ProviderPrimitiveV1,
   ProviderSettingControlV1,
 } from '../provider-api/v1'
+import { Button, FIELD_CLASS, FIELD_SM_CLASS, SelectField, TEXTAREA_SM_CLASS } from './ui'
 
 interface SettingsProps {
   onClose: () => void
@@ -75,20 +82,7 @@ function ToggleRow({
       <span className="text-sm text-zinc-300 group-hover:text-zinc-100 transition-colors select-none">
         {label}
       </span>
-      <button
-        role="switch"
-        aria-checked={checked}
-        onClick={() => onChange(!checked)}
-        className={`relative w-9 h-5 rounded-full transition-colors shrink-0 ${
-          checked ? 'bg-blue-600' : 'bg-zinc-700'
-        }`}
-      >
-        <span
-          className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all duration-150 ${
-            checked ? 'left-[18px]' : 'left-0.5'
-          }`}
-        />
-      </button>
+      <Switch checked={checked} onChange={onChange} label={label} />
     </label>
   )
 }
@@ -154,16 +148,13 @@ function ProviderSettingControl({
             <p className="text-sm text-zinc-300">{control.label}</p>
             {control.description && <p className="text-xs text-zinc-600 mt-0.5">{control.description}</p>}
           </div>
-          <button
-            type="button"
+          <Button
+            variant={control.destructive ? 'danger' : 'secondary'}
+            size="sm"
+            label={running ? 'Working…' : control.label}
             disabled={running}
             onClick={() => { void run() }}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50 ${
-              control.destructive ? 'bg-red-500/15 text-red-200' : 'bg-white/5 border border-white/10 text-zinc-300'
-            }`}
-          >
-            {running ? 'Working…' : control.label}
-          </button>
+          />
         </div>
         {actionError && <p role="alert" className="mt-2 text-xs text-red-300">{actionError}</p>}
       </div>
@@ -187,13 +178,14 @@ function ProviderSettingControl({
     return (
       <label className="block py-2">
         <span className="text-sm text-zinc-300">{control.label}</span>
-        <select
+        <SelectField
+          size="md"
           value={typeof value === 'string' ? value : (control.defaultValue ?? '')}
           onChange={(event) => { void onValueChanged(control.key, event.target.value) }}
-          className="mt-2 w-full px-3 py-2 bg-zinc-900/80 border border-white/10 rounded-lg text-sm text-zinc-100"
+          className="mt-2 w-full"
         >
           {control.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
+        </SelectField>
         {control.description && <span className="block text-xs text-zinc-600 mt-1">{control.description}</span>}
       </label>
     )
@@ -217,24 +209,21 @@ function ProviderSettingControl({
             if (isSecret) setDraft(event.target.value)
             else void onValueChanged(control.key, event.target.value)
           }}
-          className="min-w-0 flex-1 px-3 py-2 bg-zinc-900/80 border border-white/10 rounded-lg text-sm text-zinc-100"
+          className={`${FIELD_CLASS} min-w-0 flex-1`}
         />
         {isSecret && (
           <>
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="sm"
+              label="Save"
               disabled={!draft}
               onClick={() => {
                 void onSecretChanged(control.key, draft).then(() => setDraft(''))
               }}
-              className="px-3 py-2 rounded-lg text-xs bg-blue-600 text-white disabled:opacity-40"
-            >Save</button>
+            />
             {secretPresent && (
-              <button
-                type="button"
-                onClick={() => { void onSecretChanged(control.key, null) }}
-                className="px-3 py-2 rounded-lg text-xs bg-white/5 text-zinc-300"
-              >Clear</button>
+              <Button variant="secondary" size="sm" label="Clear" onClick={() => { void onSecretChanged(control.key, null) }} />
             )}
           </>
         )}
@@ -296,11 +285,12 @@ function ProviderFormControl({
           <p className="text-sm text-zinc-300">{control.label}</p>
           {control.description && <p className="text-xs text-zinc-600 mt-0.5">{control.description}</p>}
         </div>
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="sm"
+          label={open ? 'Cancel' : control.label}
           onClick={() => { setOpen((current) => !current); setValues({}); setResult(null) }}
-          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-white/5 border border-white/10 text-zinc-300"
-        >{open ? 'Cancel' : control.label}</button>
+        />
       </div>
       {open && (
         <form
@@ -328,7 +318,6 @@ function ProviderFormControl({
                 const next = event.target.value
                 setValues((current) => ({ ...current, [field.id]: next }))
               },
-              className: 'mt-1 w-full px-3 py-2 bg-zinc-900/80 border border-white/10 rounded-lg text-xs font-mono text-zinc-100',
             }
             return (
               <label key={field.id} htmlFor={common.id} className="block">
@@ -336,23 +325,26 @@ function ProviderFormControl({
                 {field.multiline ? (
                   <textarea
                     {...common}
+                    className={`${TEXTAREA_SM_CLASS} mt-1 w-full font-mono`}
                     rows={4}
                     // Masked like a password field; the text never leaves this form except on submit.
                     style={field.sensitive ? { WebkitTextSecurity: 'disc' } as unknown as CSSProperties : undefined}
                   />
                 ) : (
-                  <input {...common} type={field.sensitive ? 'password' : 'text'} />
+                  <input {...common} type={field.sensitive ? 'password' : 'text'} className={`${FIELD_SM_CLASS} mt-1 w-full font-mono`} />
                 )}
                 {field.description && <span className="block text-[11px] text-zinc-600 mt-1">{field.description}</span>}
               </label>
             )
           })}
           <div className="flex justify-end">
-            <button
+            <Button
+              variant="primary"
+              size="sm"
+              label={running ? 'Working…' : control.submit.label}
               type="submit"
               disabled={missing || running}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white disabled:opacity-40"
-            >{running ? 'Working…' : control.submit.label}</button>
+            />
           </div>
         </form>
       )}
@@ -393,7 +385,7 @@ function ProviderSettingsCard({ descriptor }: { descriptor: ProviderDescriptorV1
     ?? (descriptor.status.authenticated === true ? 'Connected' : descriptor.status.authenticated === false ? 'Not connected' : descriptor.status.state)
 
   return (
-    <div className="rounded-lg bg-zinc-800/60 p-4" style={{ borderLeft: `3px solid ${descriptor.manifest.brandColor}` }}>
+    <div className="rounded-2xl bg-white/[0.03] p-4" style={{ borderLeft: `3px solid ${descriptor.manifest.brandColor}` }}>
       <div className="flex items-start justify-between gap-4">
         <div className="flex min-w-0 items-center gap-3">
           {descriptor.iconUrl ? <img src={descriptor.iconUrl} alt="" className="h-8 w-8 rounded-md" /> : (
@@ -438,16 +430,17 @@ function ProviderSettingsCard({ descriptor }: { descriptor: ProviderDescriptorV1
           <div className="flex items-center justify-between gap-3">
             <p className="text-xs text-red-200">Remove imported library rows, settings, sessions, secrets, and cache?</p>
             <div className="flex gap-2">
-              <button type="button" onClick={() => setRemoveConfirm(false)} className="px-2 py-1 text-xs text-zinc-400">Cancel</button>
-              <button
-                type="button"
+              <Button variant="ghost" size="xs" label="Cancel" onClick={() => setRemoveConfirm(false)} />
+              <Button
+                variant="danger"
+                size="xs"
+                label={removing ? 'Removing…' : 'Remove all data'}
                 disabled={removing}
                 onClick={() => {
                   setRemoving(true)
                   void window.puros.provider.removeData(descriptor.manifest.id).then(() => window.location.reload())
                 }}
-                className="px-2 py-1 rounded text-xs bg-red-500/20 text-red-200 disabled:opacity-50"
-              >{removing ? 'Removing…' : 'Remove all data'}</button>
+              />
             </div>
           </div>
         ) : (
@@ -502,13 +495,13 @@ function AccountsTab() {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3">
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-3">
           Streaming providers
         </h3>
         <div className="space-y-3">
           {providers.map((descriptor) => <ProviderSettingsCard key={descriptor.manifest.id} descriptor={descriptor} />)}
           {providersLoaded && providers.length === 0 && (
-            <p className="rounded-lg bg-zinc-800/40 px-4 py-5 text-sm text-zinc-500">No streaming providers are installed.</p>
+            <p className="rounded-2xl bg-white/[0.03] px-4 py-5 text-sm text-zinc-500">No streaming providers are installed.</p>
           )}
         </div>
       </div>
@@ -516,10 +509,10 @@ function AccountsTab() {
       <ProviderPackagesSettings />
 
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3">
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-3">
           Streaming audio cache
         </h3>
-        <div className="bg-zinc-800/60 rounded-lg p-4 max-w-md">
+        <div className="bg-white/[0.03] rounded-2xl p-4 max-w-md">
           <label className="block">
             <span className="text-sm text-zinc-200 font-medium">Cache limit</span>
             <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -534,7 +527,7 @@ function AccountsTab() {
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') event.currentTarget.blur()
                 }}
-                className="w-28 px-3 py-2 bg-zinc-900/80 border border-white/10 rounded-lg text-sm text-zinc-100 focus:outline-none focus:border-white/20"
+                className={`${FIELD_CLASS} w-28`}
               />
               <span className="text-sm text-zinc-500">GB</span>
               <span className="text-xs text-zinc-600">•</span>
@@ -563,10 +556,27 @@ function AccountsTab() {
 // Player tab
 // ---------------------------------------------------------------------------
 
+const SEEK_BAR_STYLE_OPTIONS: ReadonlyArray<{ id: SeekBarStyle; label: string; description: string }> = [
+  {
+    id: 'bar',
+    label: 'Progress bar',
+    description: 'A thin line that fills as the track plays.',
+  },
+  {
+    id: 'waveform',
+    label: 'Waveform',
+    description: 'The track\'s loudness over time, like Roon. It is analysed in the background and fills in while a streamed track downloads.',
+  },
+]
+
 function PlayerTab() {
   const {
     playerTags,
     setPlayerTag,
+    showPlayerBadges,
+    setShowPlayerBadges,
+    seekBarStyle,
+    setSeekBarStyle,
     discordRichPresenceEnabled,
     discordArtworkUploadProvider,
     discordCloudinaryCloudName,
@@ -581,7 +591,7 @@ function PlayerTab() {
     setDiscordCloudinaryApiKey,
     setDiscordCloudinaryApiSecret,
     setStreamingPlaybackMode,
-    showLyricsInNowPlaying,
+    nowPlayingTabs,
     endlessPlaybackEnabled,
     rememberPlaybackSession,
     resumePlaybackOnLaunch,
@@ -591,7 +601,9 @@ function PlayerTab() {
     lyricsApiKeys,
     lyricsFontSize,
     dimAlbumArtWhenLyricsVisible,
-    setShowLyricsInNowPlaying,
+    nowPlayingArtworkStyle,
+    setNowPlayingTabEnabled,
+    setNowPlayingArtworkStyle,
     setEndlessPlaybackEnabled,
     setRememberPlaybackSession,
     setResumePlaybackOnLaunch,
@@ -691,21 +703,21 @@ function PlayerTab() {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1">
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1">
           Playback Source
         </h3>
         <p className="text-xs text-zinc-600 mb-3">
           Choose how provider tracks are prepared before they are handed to the audio engine.
         </p>
         <div className="space-y-2 max-w-lg">
-          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-white/10 bg-zinc-800/40 px-4 py-3">
+          <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
             <input
               type="radio"
               name="streaming-playback-mode"
               value="progressive-cache"
               checked={streamingPlaybackMode === 'progressive-cache'}
               onChange={() => { void setStreamingPlaybackMode('progressive-cache') }}
-              className="mt-0.5 accent-blue-600"
+              className="mt-0.5 accent-white"
             />
             <span>
               <span className="block text-sm font-medium text-zinc-100">
@@ -716,14 +728,14 @@ function PlayerTab() {
               </span>
             </span>
           </label>
-          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-white/10 bg-zinc-800/40 px-4 py-3">
+          <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
             <input
               type="radio"
               name="streaming-playback-mode"
               value="download-first"
               checked={streamingPlaybackMode === 'download-first'}
               onChange={() => { void setStreamingPlaybackMode('download-first') }}
-              className="mt-0.5 accent-blue-600"
+              className="mt-0.5 accent-white"
             />
             <span>
               <span className="flex items-center gap-2 text-sm font-medium text-zinc-100">
@@ -741,7 +753,7 @@ function PlayerTab() {
       </div>
 
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1">
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1">
           Discord Rich Presence
         </h3>
         <p className="text-xs text-zinc-600 mb-3">
@@ -760,14 +772,15 @@ function PlayerTab() {
             <label className="block text-xs uppercase tracking-wider text-zinc-500">
               Local Artwork Hosting
             </label>
-            <select
+            <SelectField
+              size="md"
               value={discordArtworkUploadProvider}
               onChange={(event) => { void setDiscordArtworkUploadProvider(event.target.value === 'cloudinary' ? 'cloudinary' : 'none') }}
-              className="w-full px-3 py-2 bg-zinc-800/60 border border-white/10 rounded-lg text-sm text-zinc-200 focus:outline-none focus:border-white/20"
+              className="w-full"
             >
               <option value="none">Disabled</option>
               <option value="cloudinary">Cloudinary</option>
-            </select>
+            </SelectField>
             <p className="text-[11px] text-zinc-600 leading-relaxed">
               Local or embedded album covers are not publicly reachable by Discord. Choose a host if you want Puros to upload them and reuse the hosted URL in Rich Presence.
             </p>
@@ -790,7 +803,7 @@ function PlayerTab() {
                     }
                   }}
                   placeholder="Your Cloudinary cloud name"
-                  className="w-full px-3 py-2 bg-zinc-800/60 border border-white/10 rounded-lg text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-white/20"
+                  className={`${FIELD_CLASS} w-full`}
                 />
               </div>
 
@@ -809,7 +822,7 @@ function PlayerTab() {
                     }
                   }}
                   placeholder="Unsigned upload preset name"
-                  className="w-full px-3 py-2 bg-zinc-800/60 border border-white/10 rounded-lg text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-white/20"
+                  className={`${FIELD_CLASS} w-full`}
                 />
               </div>
 
@@ -828,7 +841,7 @@ function PlayerTab() {
                     }
                   }}
                   placeholder="Optional: API key for signed/basic-auth uploads"
-                  className="w-full px-3 py-2 bg-zinc-800/60 border border-white/10 rounded-lg text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-white/20"
+                  className={`${FIELD_CLASS} w-full`}
                 />
               </div>
 
@@ -847,7 +860,7 @@ function PlayerTab() {
                     }
                   }}
                   placeholder="Optional: API secret for signed/basic-auth uploads"
-                  className="w-full px-3 py-2 bg-zinc-800/60 border border-white/10 rounded-lg text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-white/20"
+                  className={`${FIELD_CLASS} w-full`}
                 />
               </div>
 
@@ -860,13 +873,13 @@ function PlayerTab() {
       </div>
 
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1">
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1">
           Sample rate
         </h3>
         <p className="text-xs text-zinc-600 mb-3">
           In exclusive mode Puros opens the device at the source's own rate (48 kHz for Opus). When the device cannot run at that rate, Puros normally resamples and shows it in the signal path. With this option it stops with an error instead.
         </p>
-        <div className="rounded-lg border border-white/10 bg-zinc-800/40 px-4 py-3 max-w-lg">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 max-w-lg">
           <ToggleRow
             label="Never resample in exclusive mode"
             checked={strictSampleRate}
@@ -876,13 +889,13 @@ function PlayerTab() {
       </div>
 
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1">
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1">
           Queue playback
         </h3>
         <p className="text-xs text-zinc-600 mb-3">
           When your current queue runs out, Puros can continue with a shuffled radio queue from the last artist you played.
         </p>
-        <div className="rounded-lg border border-white/10 bg-zinc-800/40 px-4 py-3 max-w-lg">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 max-w-lg">
           <ToggleRow
             label="Enable endless playback"
             checked={endlessPlaybackEnabled}
@@ -892,13 +905,13 @@ function PlayerTab() {
       </div>
 
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1">
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1">
           Session
         </h3>
         <p className="text-xs text-zinc-600 mb-3">
           Puros can remember the queue, the last track, where you stopped in it, and shuffle and repeat, and bring them back the next time you open the app.
         </p>
-        <div className="rounded-lg border border-white/10 bg-zinc-800/40 px-4 py-3 max-w-lg">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 max-w-lg">
           <ToggleRow
             label="Remember last session"
             checked={rememberPlaybackSession}
@@ -929,7 +942,40 @@ function PlayerTab() {
       </div>
 
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1">
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1">
+          Now Playing
+        </h3>
+        <p className="text-xs text-zinc-600 mb-3">
+          Tabs shown beside the artwork in the full-screen Now Playing view. With all of them off, only the artwork is shown.
+        </p>
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 max-w-lg">
+          <div className="flex items-center justify-between gap-4 py-2">
+            <span className="text-sm text-zinc-300 select-none">Artwork</span>
+            <Segmented<NowPlayingArtworkStyle>
+              value={nowPlayingArtworkStyle}
+              options={[
+                { id: 'flat', label: 'Flat' },
+                { id: 'jewelCase', label: 'Jewel case', title: 'The cover in a 3D CD case that turns towards the pointer' },
+              ]}
+              onChange={(value) => { void setNowPlayingArtworkStyle(value) }}
+            />
+          </div>
+          {NOW_PLAYING_TAB_IDS.map((id) => (
+            <ToggleRow
+              key={id}
+              label={NOW_PLAYING_TAB_LABELS[id]}
+              checked={nowPlayingTabs[id]}
+              onChange={(value) => { void setNowPlayingTabEnabled(id, value) }}
+            />
+          ))}
+          <p className="pb-2 text-xs text-zinc-500">
+            Turning the visualizer off stops it entirely, including a detached visualizer window, so it uses no GPU or memory.
+          </p>
+        </div>
+      </div>
+
+      <div>
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1">
           Lyrics
         </h3>
         <p className="text-xs text-zinc-600 mb-3">
@@ -937,12 +983,7 @@ function PlayerTab() {
         </p>
 
         <div className="space-y-4">
-          <div className="rounded-lg border border-white/10 bg-zinc-800/40 px-4 py-3">
-            <ToggleRow
-              label="Show lyrics in Now Playing view"
-              checked={showLyricsInNowPlaying}
-              onChange={(value) => { void setShowLyricsInNowPlaying(value) }}
-            />
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
             <ToggleRow
               label="Dim album art when lyrics are visible"
               checked={dimAlbumArtWhenLyricsVisible}
@@ -950,7 +991,7 @@ function PlayerTab() {
             />
           </div>
 
-          <div className="rounded-lg border border-white/10 bg-zinc-800/40 px-4 py-4">
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-medium text-zinc-100">Lyrics font size</p>
@@ -1019,7 +1060,7 @@ function PlayerTab() {
                   onDragEnd={() => {
                     dragProviderIdRef.current = null
                   }}
-                  className="rounded-xl border border-white/10 bg-zinc-800/50 p-4"
+                  className="rounded-xl border border-white/10 bg-white/[0.03] p-4"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="flex items-start gap-3">
@@ -1078,16 +1119,15 @@ function PlayerTab() {
                           if (event.key === 'Enter') event.currentTarget.blur()
                         }}
                         placeholder={isApiKeyProvider ? `${LYRICS_PROVIDER_LABELS[provider.id]} API key` : 'No API key required'}
-                        className="w-full rounded-lg border border-white/10 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 disabled:cursor-default disabled:opacity-60 focus:outline-none focus:border-white/20"
+                        className={`${FIELD_CLASS} w-full`}
                       />
                     </div>
-                    <button
+                    <Button
+                      variant="secondary"
+                      label={testingProvider === provider.id ? 'Testing…' : 'Test connection'}
                       onClick={() => { void handleTestProvider(provider.id) }}
                       disabled={testingProvider === provider.id}
-                      className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-zinc-200 transition-colors hover:bg-white/10 disabled:opacity-50"
-                    >
-                      {testingProvider === provider.id ? 'Testing…' : 'Test connection'}
-                    </button>
+                    />
                   </div>
                 </div>
               )
@@ -1097,14 +1137,49 @@ function PlayerTab() {
       </div>
 
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1">
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1">
+          Seek bar
+        </h3>
+        <p className="text-xs text-zinc-600 mb-3">
+          Choose how track progress is drawn in the now-playing bar. Live radio always uses the plain bar.
+        </p>
+        <div className="space-y-2 max-w-lg">
+          {SEEK_BAR_STYLE_OPTIONS.map((option) => (
+            <label
+              key={option.id}
+              className="flex cursor-pointer items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3"
+            >
+              <input
+                type="radio"
+                name="seek-bar-style"
+                value={option.id}
+                checked={seekBarStyle === option.id}
+                onChange={() => { void setSeekBarStyle(option.id) }}
+                className="mt-0.5 accent-white"
+              />
+              <span>
+                <span className="block text-sm font-medium text-zinc-100">{option.label}</span>
+                <span className="mt-1 block text-[11px] leading-relaxed text-zinc-600">{option.description}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1">
           Player badges
         </h3>
         <p className="text-xs text-zinc-600 mb-3">
-          Choose which tags are shown in the now-playing bar.
+          Format, sample rate and output tags in the now-playing bar. The signal path button always has the details.
         </p>
         <div className="divide-y divide-white/5">
-          {(Object.keys(PLAYER_TAG_LABELS) as (keyof PlayerTagSettings)[]).map((key) => (
+          <ToggleRow
+            label="Show badges in the player"
+            checked={showPlayerBadges}
+            onChange={(v) => void setShowPlayerBadges(v)}
+          />
+          {showPlayerBadges && (Object.keys(PLAYER_TAG_LABELS) as (keyof PlayerTagSettings)[]).map((key) => (
             <ToggleRow
               key={key}
               label={PLAYER_TAG_LABELS[key]}
@@ -1236,7 +1311,7 @@ function LibraryTab() {
   return (
     <div className="space-y-8">
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1">
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1">
           Home
         </h3>
         <p className="text-xs text-zinc-600 mb-3">
@@ -1254,7 +1329,7 @@ function LibraryTab() {
               }
             }}
             placeholder="Your name"
-            className="w-full px-3 py-2 bg-zinc-800/60 border border-white/10 rounded-lg text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-white/20"
+            className={`${FIELD_CLASS} w-full`}
           />
           <p className="text-[11px] text-zinc-600">
             Preview: {homeNameDraft.trim() ? `Welcome, ${homeNameDraft.trim()}` : 'Welcome back'}
@@ -1263,9 +1338,9 @@ function LibraryTab() {
       </div>
 
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1">Playlists</h3>
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1">Playlists</h3>
         <p className="text-xs text-zinc-600 mb-2">Show each provider's playlists and synced folders inside a folder for that provider in the sidebar. Your own folders are grouped under the provider their playlists come from.</p>
-        <div className="max-w-md rounded-lg border border-white/10 bg-zinc-800/60 px-3 py-2">
+        <div className="max-w-md rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
           <ToggleRow
             label="Group playlists by provider"
             checked={groupPlaylistsByProvider}
@@ -1275,9 +1350,9 @@ function LibraryTab() {
       </div>
 
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1">Unavailable sources</h3>
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1">Unavailable sources</h3>
         <p className="text-xs text-zinc-600 mb-2">Provider imports are retained when a plugin is absent. They remain inert and hidden unless you enable this view.</p>
-        <div className="max-w-md rounded-lg border border-white/10 bg-zinc-800/60 px-3 py-2">
+        <div className="max-w-md rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
           <ToggleRow
             label="Show unavailable provider imports"
             checked={showUnavailableSources}
@@ -1296,7 +1371,7 @@ function LibraryTab() {
 
       {/* Music folders */}
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3">
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-3">
           Music folders
         </h3>
 
@@ -1305,7 +1380,7 @@ function LibraryTab() {
         ) : (
           <div className="space-y-1 mb-3">
             {folders.map((f) => (
-              <div key={f.id} className="px-3 py-2.5 bg-zinc-800/60 rounded-lg">
+              <div key={f.id} className="px-3 py-2.5 bg-white/[0.03] rounded-xl">
                 <div className="flex items-center gap-3">
                   <Folder className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
                   <div className="min-w-0 flex-1">
@@ -1313,33 +1388,34 @@ function LibraryTab() {
                     <p className="text-[10px] text-zinc-600 mt-0.5">Last scanned: {fmtDate(f.last_scanned_at)}</p>
                   </div>
                   {confirmRemoveFolderId !== f.id ? (
-                    <button
+                    <Button
+                      variant="danger"
+                      size="xs"
+                      label="Remove"
                       onClick={() => setConfirmRemoveFolderId(f.id)}
                       disabled={isScanning || removingFolderId != null}
-                      className="shrink-0 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50"
-                    >
-                      Remove
-                    </button>
+                      className="shrink-0"
+                    />
                   ) : (
                     <div className="shrink-0 max-w-[18rem] rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2">
                       <p className="text-[11px] text-zinc-300 leading-relaxed">
                         Remove this folder from local files and forget tracks imported from it.
                       </p>
                       <div className="mt-2 flex flex-wrap justify-end gap-2">
-                        <button
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          label={removingFolderId === f.id ? 'Removing…' : 'Yes, remove'}
                           onClick={() => void handleRemoveFolder(f.id)}
                           disabled={removingFolderId === f.id}
-                          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-600 text-white hover:bg-red-500 transition-colors disabled:opacity-50"
-                        >
-                          {removingFolderId === f.id ? 'Removing…' : 'Yes, remove'}
-                        </button>
-                        <button
+                        />
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          label="Cancel"
                           onClick={() => setConfirmRemoveFolderId(null)}
                           disabled={removingFolderId === f.id}
-                          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-700 text-zinc-300 hover:bg-zinc-600 transition-colors disabled:opacity-50"
-                        >
-                          Cancel
-                        </button>
+                        />
                       </div>
                     </div>
                   )}
@@ -1350,31 +1426,31 @@ function LibraryTab() {
         )}
 
         <div className="flex flex-wrap gap-2">
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={Plus}
+            label={isScanning ? 'Scanning…' : 'Add folder…'}
             onClick={handleAddFolder}
             disabled={isScanning}
-            className="flex items-center gap-2 px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-xs text-zinc-300 hover:bg-white/10 hover:text-white transition-colors disabled:opacity-50"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            {isScanning ? 'Scanning…' : 'Add folder…'}
-          </button>
+          />
 
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={RotateCw}
+            label={isScanning ? 'Rescanning…' : 'Rescan library'}
             onClick={handleRescan}
             disabled={isScanning || folders.length === 0}
-            className="flex items-center gap-2 px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-xs text-zinc-300 hover:bg-white/10 hover:text-white transition-colors disabled:opacity-50"
-          >
-            <RotateCw className="w-3.5 h-3.5" />
-            {isScanning ? 'Rescanning…' : 'Rescan library'}
-          </button>
+          />
         </div>
       </div>
 
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3">
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-3">
           History
         </h3>
-        <div className="border border-white/10 rounded-lg p-4">
+        <div className="border border-white/10 rounded-2xl p-4">
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-sm text-zinc-200 font-medium">Clear playback history</p>
@@ -1383,30 +1459,15 @@ function LibraryTab() {
               </p>
             </div>
             {!clearHistoryConfirm ? (
-              <button
-                onClick={() => setClearHistoryConfirm(true)}
-                className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border border-white/10 text-zinc-300 hover:bg-white/5 transition-colors"
-              >
-                Clear history…
-              </button>
+              <Button variant="quiet" size="sm" label="Clear history…" onClick={() => setClearHistoryConfirm(true)} className="shrink-0" />
             ) : (
               <div className="shrink-0 max-w-[18rem] rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
                 <p className="text-xs text-zinc-400 leading-relaxed">
                   Only Home playback history will be removed.
                 </p>
                 <div className="mt-2 flex flex-wrap justify-end gap-2">
-                  <button
-                    onClick={handleClearPlaybackHistory}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-200 text-zinc-950 hover:bg-white transition-colors"
-                  >
-                    Yes, clear
-                  </button>
-                  <button
-                    onClick={() => setClearHistoryConfirm(false)}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-700 text-zinc-300 hover:bg-zinc-600 transition-colors"
-                  >
-                    Cancel
-                  </button>
+                  <Button variant="primary" size="sm" label="Yes, clear" onClick={handleClearPlaybackHistory} />
+                  <Button variant="secondary" size="sm" label="Cancel" onClick={() => setClearHistoryConfirm(false)} />
                 </div>
               </div>
             )}
@@ -1416,10 +1477,10 @@ function LibraryTab() {
 
       {/* Danger zone */}
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-red-500/70 mb-3">
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-red-400/80 mb-3">
           Danger zone
         </h3>
-        <div className="border border-red-500/20 rounded-lg p-4 space-y-3">
+        <div className="border border-red-500/20 rounded-2xl p-4 space-y-3">
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-sm text-zinc-200 font-medium">Clear library</p>
@@ -1428,30 +1489,15 @@ function LibraryTab() {
               </p>
             </div>
             {!clearConfirm ? (
-              <button
-                onClick={() => setClearConfirm(true)}
-                className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border border-red-500/40 text-red-400 hover:bg-red-500/10 transition-colors"
-              >
-                Clear…
-              </button>
+              <Button variant="danger" size="sm" label="Clear…" onClick={() => setClearConfirm(true)} className="shrink-0" />
             ) : (
               <div className="shrink-0 max-w-[18rem] rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2">
                 <p className="text-xs text-zinc-300 leading-relaxed">
                   Only Puros library data will be removed.
                 </p>
                 <div className="mt-2 flex flex-wrap justify-end gap-2">
-                  <button
-                    onClick={handleClear}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-600 text-white hover:bg-red-500 transition-colors"
-                  >
-                    Yes, clear
-                  </button>
-                  <button
-                    onClick={() => setClearConfirm(false)}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-700 text-zinc-300 hover:bg-zinc-600 transition-colors"
-                  >
-                    Cancel
-                  </button>
+                  <Button variant="danger" size="sm" label="Yes, clear" onClick={handleClear} />
+                  <Button variant="secondary" size="sm" label="Cancel" onClick={() => setClearConfirm(false)} />
                 </div>
               </div>
             )}
@@ -1465,33 +1511,34 @@ function LibraryTab() {
               </p>
             </div>
             {!clearMetadataCacheConfirm ? (
-              <button
+              <Button
+                variant="secondary"
+                size="sm"
+                label="Clear metadata…"
                 onClick={() => setClearMetadataCacheConfirm(true)}
                 disabled={debugActionRunning !== null}
-                className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border border-sky-500/40 text-sky-300 hover:bg-sky-500/10 transition-colors disabled:opacity-50"
-              >
-                Clear metadata…
-              </button>
+                className="shrink-0"
+              />
             ) : (
-              <div className="shrink-0 max-w-[18rem] rounded-xl border border-sky-500/20 bg-sky-500/[0.06] px-3 py-2">
+              <div className="shrink-0 max-w-[18rem] rounded-xl border border-accent-500/20 bg-accent-500/[0.06] px-3 py-2">
                 <p className="text-xs text-zinc-300 leading-relaxed">
                   Only derived metadata will be removed. Local files and provider library data stay intact.
                 </p>
                 <div className="mt-2 flex flex-wrap justify-end gap-2">
-                  <button
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    label={debugActionRunning === 'clearMetadata' ? 'Clearing…' : 'Yes, clear'}
                     onClick={handleClearMetadataCache}
                     disabled={debugActionRunning !== null}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-sky-600 text-white hover:bg-sky-500 transition-colors disabled:opacity-50"
-                  >
-                    {debugActionRunning === 'clearMetadata' ? 'Clearing…' : 'Yes, clear'}
-                  </button>
-                  <button
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    label="Cancel"
                     onClick={() => setClearMetadataCacheConfirm(false)}
                     disabled={debugActionRunning !== null}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-700 text-zinc-300 hover:bg-zinc-600 transition-colors disabled:opacity-50"
-                  >
-                    Cancel
-                  </button>
+                  />
                 </div>
               </div>
             )}
@@ -1501,37 +1548,38 @@ function LibraryTab() {
             <div>
               <p className="text-sm text-zinc-200 font-medium">Clear caches</p>
               <p className="text-xs text-zinc-500 mt-0.5">
-                Clear artwork, temporary streaming playback files, AutoEQ data, and other app-side cached state. Your library and provider content stay untouched.
+                Clear artwork, temporary streaming playback files, AutoEQ data, and other app-side cached state. Your library, provider content, and downloaded playlists stay untouched.
               </p>
             </div>
             {!clearCachesConfirm ? (
-              <button
+              <Button
+                variant="secondary"
+                size="sm"
+                label="Clear caches…"
                 onClick={() => setClearCachesConfirm(true)}
                 disabled={debugActionRunning !== null}
-                className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 transition-colors disabled:opacity-50"
-              >
-                Clear caches…
-              </button>
+                className="shrink-0"
+              />
             ) : (
               <div className="shrink-0 max-w-[18rem] rounded-xl border border-amber-500/20 bg-amber-500/[0.06] px-3 py-2">
                 <p className="text-xs text-zinc-300 leading-relaxed">
                   This only clears Puros caches.
                 </p>
                 <div className="mt-2 flex flex-wrap justify-end gap-2">
-                  <button
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    label={debugActionRunning === 'clearCaches' ? 'Clearing…' : 'Yes, clear'}
                     onClick={handleClearCaches}
                     disabled={debugActionRunning !== null}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-amber-600 text-white hover:bg-amber-500 transition-colors disabled:opacity-50"
-                  >
-                    {debugActionRunning === 'clearCaches' ? 'Clearing…' : 'Yes, clear'}
-                  </button>
-                  <button
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    label="Cancel"
                     onClick={() => setClearCachesConfirm(false)}
                     disabled={debugActionRunning !== null}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-700 text-zinc-300 hover:bg-zinc-600 transition-colors disabled:opacity-50"
-                  >
-                    Cancel
-                  </button>
+                  />
                 </div>
               </div>
             )}
@@ -1545,33 +1593,34 @@ function LibraryTab() {
               </p>
             </div>
             {!resetAppConfirm ? (
-              <button
+              <Button
+                variant="danger"
+                size="sm"
+                label="Reset app…"
                 onClick={() => setResetAppConfirm(true)}
                 disabled={debugActionRunning !== null}
-                className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border border-red-500/40 text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50"
-              >
-                Reset app…
-              </button>
+                className="shrink-0"
+              />
             ) : (
               <div className="shrink-0 max-w-[18rem] rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2">
                 <p className="text-xs text-zinc-300 leading-relaxed">
                   Only Puros app data will be removed.
                 </p>
                 <div className="mt-2 flex flex-wrap justify-end gap-2">
-                  <button
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    label={debugActionRunning === 'resetApp' ? 'Resetting…' : 'Yes, reset'}
                     onClick={handleResetAppData}
                     disabled={debugActionRunning !== null}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-600 text-white hover:bg-red-500 transition-colors disabled:opacity-50"
-                  >
-                    {debugActionRunning === 'resetApp' ? 'Resetting…' : 'Yes, reset'}
-                  </button>
-                  <button
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    label="Cancel"
                     onClick={() => setResetAppConfirm(false)}
                     disabled={debugActionRunning !== null}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-700 text-zinc-300 hover:bg-zinc-600 transition-colors disabled:opacity-50"
-                  >
-                    Cancel
-                  </button>
+                  />
                 </div>
               </div>
             )}
@@ -1589,6 +1638,8 @@ function LibraryTab() {
 function VisualizerTab() {
   const { customPresets, addPresets, removePreset, cycleInterval, setCycleInterval, randomize, setRandomize,
     brightness, setBrightness, reactivity, setReactivity, showFps, setShowFps, renderScale, setRenderScale } = useVisualizerStore()
+  const visualizerEnabled = useSettingsStore((s) => s.nowPlayingTabs.visualizer)
+  const setNowPlayingTabEnabled = useSettingsStore((s) => s.setNowPlayingTabEnabled)
   const [intervalDraft, setIntervalDraft] = useState(String(cycleInterval))
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
@@ -1665,11 +1716,24 @@ function VisualizerTab() {
 
   return (
     <div className="space-y-6">
+      <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4">
+        <ToggleRow
+          label="Visualizer tab in Now Playing"
+          checked={visualizerEnabled}
+          onChange={(value) => { void setNowPlayingTabEnabled('visualizer', value) }}
+        />
+        <p className="pb-3 text-xs text-zinc-500">
+          {visualizerEnabled
+            ? 'The visualizer is available in the full-screen Now Playing view.'
+            : 'Off: the visualizer never starts, so it uses no GPU or memory. The settings below apply once it is turned on.'}
+        </p>
+      </div>
+
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3">
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-3">
           Rendering
         </h3>
-        <div className="rounded-lg border border-white/10 bg-zinc-800/40 px-4">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4">
           <ToggleRow label="Show FPS" checked={showFps} onChange={setShowFps} />
           <p className="pb-3 text-xs text-zinc-500">Shows the frame rate in the top-right corner of the visualizer.</p>
           <div className="border-t border-white/5 py-3">
@@ -1701,10 +1765,10 @@ function VisualizerTab() {
         </div>
       </div>
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3">
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-3">
           Visual intensity
         </h3>
-        <div className="rounded-lg border border-white/10 bg-zinc-800/40 px-4 divide-y divide-white/5">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 divide-y divide-white/5">
           {[
             { id: 'visualizer-brightness', label: 'Brightness', value: brightness, onChange: setBrightness,
               description: 'Dims the visualizer image. Default: 80%.', defaultValue: 0.8 },
@@ -1741,10 +1805,10 @@ function VisualizerTab() {
         </div>
       </div>
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3">
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-3">
           Preset cycling
         </h3>
-        <div className="rounded-lg border border-white/10 bg-zinc-800/40 px-4 divide-y divide-white/5">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 divide-y divide-white/5">
           <div className="flex items-center justify-between gap-4 py-3">
             <div>
               <p className="text-sm text-zinc-200">Cycle presets every</p>
@@ -1764,7 +1828,7 @@ function VisualizerTab() {
                   setCycleInterval(clamped)
                 }}
                 onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
-                className="w-20 px-2 py-1.5 bg-zinc-900/80 border border-white/10 rounded-lg text-sm text-zinc-100 text-center focus:outline-none focus:border-white/20"
+                className={`${FIELD_CLASS} w-20 text-center`}
               />
               <span className="text-sm text-zinc-500">s</span>
             </div>
@@ -1778,7 +1842,7 @@ function VisualizerTab() {
       </div>
 
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1">
+        <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400 mb-1">
           Custom Milkdrop presets
         </h3>
         <p className="text-xs text-zinc-600 mb-3">
@@ -1803,23 +1867,23 @@ function VisualizerTab() {
         />
 
         <div className="flex flex-wrap gap-2">
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={Plus}
+            label={importing ? 'Importing…' : 'Import .milk files…'}
             onClick={() => { setLastFolderResult(null); fileInputRef.current?.click() }}
             disabled={importing}
-            className="flex items-center gap-2 px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-xs text-zinc-300 hover:bg-white/10 hover:text-white transition-colors disabled:opacity-50"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            {importing ? 'Importing…' : 'Import .milk files…'}
-          </button>
+          />
 
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={Folder}
+            label={importing ? 'Importing…' : 'Import from folder…'}
             onClick={() => { setLastFolderResult(null); folderInputRef.current?.click() }}
             disabled={importing}
-            className="flex items-center gap-2 px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-xs text-zinc-300 hover:bg-white/10 hover:text-white transition-colors disabled:opacity-50"
-          >
-            <Folder className="w-3.5 h-3.5" />
-            {importing ? 'Importing…' : 'Import from folder…'}
-          </button>
+          />
         </div>
 
         {lastFolderResult !== null && (
@@ -1837,24 +1901,14 @@ function VisualizerTab() {
       {presetNames.length > 0 ? (
         <div>
           <div className="flex items-center justify-between gap-3 mb-3">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+            <h3 className="text-[11px] uppercase tracking-[0.22em] text-zinc-400">
               Imported presets ({presetNames.length})
             </h3>
             {removeAllConfirm ? (
               <div className="flex items-center gap-2">
                 <span className="text-[11px] text-zinc-400">Remove all?</span>
-                <button
-                  onClick={handleRemoveAll}
-                  className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-red-600 text-white hover:bg-red-500 transition-colors"
-                >
-                  Yes
-                </button>
-                <button
-                  onClick={() => setRemoveAllConfirm(false)}
-                  className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-zinc-700 text-zinc-300 hover:bg-zinc-600 transition-colors"
-                >
-                  Cancel
-                </button>
+                <Button variant="danger" size="xs" label="Yes" onClick={handleRemoveAll} />
+                <Button variant="secondary" size="xs" label="Cancel" onClick={() => setRemoveAllConfirm(false)} />
               </div>
             ) : (
               <button
@@ -1869,33 +1923,18 @@ function VisualizerTab() {
             {visiblePresets.map((name) => (
               <div
                 key={name}
-                className="flex items-center justify-between gap-3 px-3 py-2 bg-zinc-800/60 rounded-lg"
+                className="flex items-center justify-between gap-3 px-3 py-2 bg-white/[0.03] rounded-xl"
               >
                 <p className="text-sm text-zinc-200 truncate min-w-0">{name}</p>
-                <button
-                  onClick={() => removePreset(name)}
-                  className="shrink-0 px-2.5 py-1 rounded-md text-[11px] font-medium border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors"
-                >
-                  Remove
-                </button>
+                <Button variant="danger" size="xs" label="Remove" onClick={() => removePreset(name)} className="shrink-0" />
               </div>
             ))}
           </div>
           {hiddenCount > 0 && (
-            <button
-              onClick={() => setShowAll(true)}
-              className="mt-2 w-full py-1.5 rounded-lg text-xs text-zinc-500 hover:text-zinc-300 hover:bg-white/5 transition-colors"
-            >
-              Show {hiddenCount} more…
-            </button>
+            <Button variant="ghost" size="sm" label={`Show ${hiddenCount} more…`} onClick={() => setShowAll(true)} className="mt-2 w-full" />
           )}
           {showAll && presetNames.length > 5 && (
-            <button
-              onClick={() => setShowAll(false)}
-              className="mt-1 w-full py-1.5 rounded-lg text-xs text-zinc-500 hover:text-zinc-300 hover:bg-white/5 transition-colors"
-            >
-              Show less
-            </button>
+            <Button variant="ghost" size="sm" label="Show less" onClick={() => setShowAll(false)} className="mt-1 w-full" />
           )}
         </div>
       ) : (
@@ -1931,36 +1970,37 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
   const tabs: { id: Tab; label: string }[] = [
     { id: 'accounts', label: 'Accounts' },
     { id: 'player', label: 'Playback' },
+    { id: 'downloads', label: 'Downloads' },
     { id: 'audio', label: 'Audio' },
+    { id: 'appearance', label: 'Appearance' },
     { id: 'visualizer', label: 'Visualizer' },
     { id: 'library', label: 'Library & Home' },
   ]
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
-    >
-      <div className="bg-zinc-900 border border-white/10 rounded-2xl shadow-2xl w-[min(760px,94vw)] max-h-[80vh] flex flex-col overflow-hidden">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+      {/* The dimming is a sibling, not a parent, of the panel: a parent with a
+          backdrop filter would leave the panel's glass nothing to refract. */}
+      <div aria-hidden className="absolute inset-0 bg-black/45 backdrop-blur-sm" onClick={onClose} />
+      <GlassPanel
+        radius={16}
+        tint={SOLID_GLASS_TINT}
+        className="relative border border-transparent w-[min(760px,94vw)] max-h-[80vh] flex flex-col overflow-hidden"
+      >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 shrink-0">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/5 shrink-0">
           <h2 className="text-sm font-semibold text-zinc-100">Settings</h2>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-white/5 transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <Button variant="ghost" size="sm" iconOnly icon={X} label="Close settings" onClick={onClose} />
         </div>
 
         <div className="flex flex-1 min-h-0">
           {/* Sidebar */}
-          <nav className="w-36 shrink-0 border-r border-white/10 py-3 px-2 space-y-0.5">
+          <nav className="w-36 shrink-0 border-r border-white/5 py-3 px-2 space-y-0.5">
             {tabs.map((t) => (
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
-                className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+                className={`w-full text-left px-3 py-2 rounded-xl text-sm transition-colors ${
                   tab === t.id
                     ? 'bg-white/10 text-zinc-100'
                     : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200'
@@ -1975,12 +2015,14 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
           <div className="flex-1 overflow-y-auto px-6 py-4">
             {tab === 'accounts' && <AccountsTab />}
             {tab === 'player' && <PlayerTab />}
+            {tab === 'downloads' && <DownloadsSettings onClose={onClose} />}
             {tab === 'audio' && <AudioSetupSettings />}
+            {tab === 'appearance' && <AppearanceSettings />}
             {tab === 'library' && <LibraryTab />}
             {tab === 'visualizer' && <VisualizerTab />}
           </div>
         </div>
-      </div>
+      </GlassPanel>
     </div>
   )
 }

@@ -33,6 +33,7 @@ interface FormatBadgesProps {
   playbackDecision?: PlaybackDecision | null
   bluetoothInfo?: BluetoothInfo | null
   qualityOnly?: boolean
+  className?: string
 }
 
 const BLUETOOTH_TOOLTIP =
@@ -53,12 +54,15 @@ export default function FormatBadges({
   playbackDecision,
   bluetoothInfo,
   qualityOnly = false,
+  className = 'mt-1 flex-wrap',
 }: FormatBadgesProps) {
   const tags = useSettingsStore((s) => s.playerTags)
+  // Manual Restore processes lossless PCM too; Auto leaves lossless sources bit-perfect.
   const dspActive = useDSPStore((s) =>
     (s.eqEnabled && !!s.activeProfile) ||
     (s.peqEnabled && s.peqBands.some((band) => band.enabled)) ||
-    s.crossfeedEnabled || s.plugins.some((plugin) => plugin.enabled))
+    s.crossfeedEnabled || s.plugins.some((plugin) => plugin.enabled) ||
+    s.restore.mode === 'manual')
   const volume = usePlayerStore((s) => s.volume)
   const volumeControl = usePlayerStore((s) => s.volumeControl)
 
@@ -90,7 +94,7 @@ export default function FormatBadges({
     !showSharedPlaybackSummary
 
   return (
-    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+    <div className={`flex items-center gap-1.5 ${className}`}>
       {/* Format badge */}
       {(qualityOnly || tags.format) && (
         <span className={`${badgeBase} ${formatBadgeClasses(formatInfo)}`}>

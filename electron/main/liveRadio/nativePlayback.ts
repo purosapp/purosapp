@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import type { LiveRadioPlaybackStatus } from '../../../src/services/liveRadio/types'
+import { restoreSourceForFfmpegCodec } from '../../../src/services/restoreSettings'
+import { createFfmpegLogReader } from './ffmpegLog'
 import { getAudioEngine } from '../audio/engine'
 import { getFfmpegPath } from '../audio/localPlayback'
 import { setPlaybackState } from '../playbackCoordinator'
@@ -45,7 +47,9 @@ export async function startLiveRadioNativePlayback(stationId: string, streamUrl:
   const pcmCodec = pcmCodecForCurrentOutput(currentFormat)
   const args = [
     '-hide_banner',
-    '-loglevel', 'warning',
+    '-nostats',
+    // Info level for the input stream's codec (Puros Restore); only warnings and errors are surfaced.
+    '-loglevel', 'level+info',
     '-reconnect', '1',
     '-reconnect_streamed', '1',
     '-reconnect_delay_max', '8',
@@ -62,7 +66,12 @@ export async function startLiveRadioNativePlayback(stationId: string, streamUrl:
 
   try {
     const child = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
-    let stderr = ''
+    const log = createFfmpegLogReader((codec) => {
+      if (liveRadioProcess?.child !== child) return
+      // The decoder's own codec decides whether Auto restoration engages for the stream.
+      void engine.setPcmStreamSourceClass(restoreSourceForFfmpegCodec(codec), codec.toUpperCase())
+        .catch((error: unknown) => console.warn('[Puros][LiveRadio] Could not report stream codec:', error))
+    })
     let settled = false
     liveRadioProcess = { stationId, streamUrl, child }
 
@@ -74,10 +83,7 @@ export async function startLiveRadioNativePlayback(stationId: string, streamUrl:
       }
     })
 
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString('utf8')
-      if (stderr.length > 4000) stderr = stderr.slice(-4000)
-    })
+    child.stderr.on('data', (chunk: Buffer) => log.push(chunk.toString('utf8')))
 
     child.once('error', (error) => {
       if (liveRadioProcess?.child === child) liveRadioProcess = null
@@ -96,7 +102,7 @@ export async function startLiveRadioNativePlayback(stationId: string, streamUrl:
       sendLiveRadioStatus({
         stationId,
         state: code === 0 ? 'stopped' : 'error',
-        message: stderr.trim() || (signal ? `ffmpeg stopped (${signal})` : `ffmpeg exited with code ${code}`),
+        message: log.problems().trim() || (signal ? `ffmpeg stopped (${signal})` : `ffmpeg exited with code ${code}`),
         attempt: 0,
       })
     })
@@ -117,7 +123,7 @@ export async function startLiveRadioNativePlayback(stationId: string, streamUrl:
         if (settled) return
         settled = true
         clearTimeout(timeout)
-        reject(new Error(stderr.trim() || `ffmpeg exited with code ${code}`))
+        reject(new Error(log.problems().trim() || `ffmpeg exited with code ${code}`))
       })
       child.stdout.once('data', () => {
         if (settled) return

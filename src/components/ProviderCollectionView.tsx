@@ -2,19 +2,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { HomeProviderCollectionBundle, HomeProviderCollectionItem, HomeProviderTrack } from '../services/homeProviderShelves'
 import { usePlayerStore, waitForPlaybackStart, type PlaybackContext, type Track } from '../store/playerStore'
 import { useAppShellStore } from '../store/appShellStore'
+import { ExternalLink, ListMusic, Lock, Play, Shuffle } from 'lucide-react'
 import ProviderBadge from './ProviderBadge'
-import ArtworkThumbnail from './ArtworkThumbnail'
+import CollectionView, { type CollectionAction } from './CollectionView'
+import TrackList, { TrackListSkeleton, type TrackListRow } from './TrackList'
+import { PageStatus } from './ui'
+import { formatTrackDuration } from '../utils/formatTime'
 import { fisherYatesShuffle } from '../services/local/scanner'
 import { recordRecentlyPlayedPlaylist } from '../services/homeRecents'
 import type { CatalogResolvedPlaybackTrack } from '../services/catalog/types'
 import { getProviderTrackShareUrl } from '../utils/providerShare'
+import { showContextMenu } from '../utils/contextMenu'
 import { useProviderStatusStore } from '../store/providerStatusStore'
-
-function formatDuration(seconds: number): string {
-  const m = Math.floor(seconds / 60)
-  const s = Math.floor(seconds % 60)
-  return `${m}:${s.toString().padStart(2, '0')}`
-}
+import { unavailableTrackLabel } from '../utils/trackAvailability'
 
 function providerTrackToPlaybackTrack(row: HomeProviderTrack): Track {
   return {
@@ -34,6 +34,7 @@ function providerTrackToPlaybackTrack(row: HomeProviderTrack): Track {
     artworkUrl: row.artworkUrl,
     discordArtworkUrl: row.discordArtworkUrl ?? null,
     formatInfo: row.formatInfo ?? undefined,
+    unavailableReason: row.unavailableReason ?? null,
   }
 }
 
@@ -62,6 +63,7 @@ function resolvedPlaybackToTrack(row: HomeProviderTrack, resolved: CatalogResolv
     startOffsetMs: resolved.startOffsetMs ?? 0,
     endOffsetMs: resolved.endOffsetMs ?? null,
     cueSheetPath: resolved.cueSheetPath ?? null,
+    unavailableReason: row.unavailableReason ?? null,
   }
 }
 
@@ -73,12 +75,11 @@ export default function ProviderCollectionView({
   const [bundle, setBundle] = useState<HomeProviderCollectionBundle | null>(null)
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; rowIndex: number } | null>(null)
-  const contextMenuRef = useRef<HTMLDivElement | null>(null)
   // Monotonic token so a newer play action cancels in-flight background queue
   // hydration from a previous one.
   const playbackRequestRef = useRef(0)
   const { setQueue, addToQueue, setNotification } = usePlayerStore()
+  const currentTrackId = usePlayerStore((state) => state.currentTrack?.id)
   const providerDisplayName = useProviderStatusStore((state) => (
     state.providers.find(({ manifest }) => manifest.id === String(collection.provider))?.manifest.displayName
       ?? String(collection.provider)
@@ -161,9 +162,15 @@ export default function ProviderCollectionView({
   // playback (the old Promise.all) fired a per-track source lookup for the
   // whole list, stalling the song the user actually clicked. Mirrors
   // catalogStore.playTracks — the shared catalog/library playback path.
-  const startPlaybackFromRows = useCallback(async (orderedRows: HomeProviderTrack[], startIndex: number) => {
-    if (!orderedRows.length) return
-    const safeStartIndex = Math.max(0, Math.min(startIndex, orderedRows.length - 1))
+  const startPlaybackFromRows = useCallback(async (rowsToPlay: HomeProviderTrack[], startIndex: number) => {
+    // Greyed-out rows are never queued; start at the clicked row or the next playable one.
+    const requestedRow = rowsToPlay.slice(Math.max(0, startIndex)).find((row) => !row.unavailableReason)
+    const orderedRows = rowsToPlay.filter((row) => !row.unavailableReason)
+    if (!orderedRows.length) {
+      if (rowsToPlay.length) setNotification('None of these tracks are available')
+      return
+    }
+    const safeStartIndex = requestedRow ? orderedRows.indexOf(requestedRow) : 0
     const selectedRow = orderedRows[safeStartIndex]
     if (!selectedRow) return
 
@@ -188,27 +195,7 @@ export default function ProviderCollectionView({
         addToQueue(next)
       }
     })()
-  }, [addToQueue, playbackContext, resolvePlaybackTrack, setQueue])
-
-  useEffect(() => {
-    if (!contextMenu) return
-
-    const handlePointerDown = (event: MouseEvent) => {
-      if (contextMenuRef.current?.contains(event.target as Node)) return
-      setContextMenu(null)
-    }
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setContextMenu(null)
-    }
-
-    window.addEventListener('mousedown', handlePointerDown)
-    window.addEventListener('keydown', handleKeyDown)
-    return () => {
-      window.removeEventListener('mousedown', handlePointerDown)
-      window.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [contextMenu, contextMenuRef])
+  }, [addToQueue, playbackContext, resolvePlaybackTrack, setNotification, setQueue])
 
   const handlePlayTrack = useCallback(async (index: number) => {
     void recordRecentlyPlayedPlaylist({
@@ -272,47 +259,34 @@ export default function ProviderCollectionView({
     await startPlaybackFromRows(fisherYatesShuffle(visibleRows), 0)
   }, [collection.id, collection.provider, collection.sourceId, collection.sourceType, collection.syncedPlaylistId, playbackContext, rows.length, startPlaybackFromRows, visibleRows])
 
-  const handleContextMenu = useCallback((event: React.MouseEvent, rowIndex: number) => {
-    event.preventDefault()
-    event.stopPropagation()
-    const menuW = 220
+  const handleContextMenu = useCallback((rowIndex: number) => {
     const row = visibleRows[rowIndex]
-    const itemCount = row && getProviderTrackShareUrl({
-      providerUrl: row.providerUrl,
-    }) ? 2 : 1
-    const menuH = itemCount * 36 + 12
-    setContextMenu({
-      x: Math.min(event.clientX, window.innerWidth - menuW - 8),
-      y: Math.min(event.clientY, window.innerHeight - menuH - 8),
-      rowIndex,
-    })
-  }, [visibleRows])
-
-  const handleAddTrackToQueue = useCallback(async () => {
-    if (!contextMenu) return
-    const row = visibleRows[contextMenu.rowIndex]
-    if (!row) return
-    setContextMenu(null)
-    const track = await resolvePlaybackTrack(row)
-    addToQueue(track)
-    setNotification(`Added to queue: ${row.title ?? 'Track'}`)
-  }, [addToQueue, contextMenu, resolvePlaybackTrack, setNotification, visibleRows])
-
-  const handleShareTrackLink = useCallback(async () => {
-    if (!contextMenu) return
-    const row = visibleRows[contextMenu.rowIndex]
     if (!row) return
     const shareUrl = getProviderTrackShareUrl({
       providerUrl: row.providerUrl,
     })
-    if (!shareUrl) return
-    await window.puros.app.copyToClipboard(shareUrl)
-    setContextMenu(null)
-    setNotification('Song link copied')
-  }, [contextMenu, setNotification, visibleRows])
 
-  const handleOpenArtist = useCallback(async (event: React.MouseEvent, row: HomeProviderTrack) => {
-    event.stopPropagation()
+    void showContextMenu([
+      !row.unavailableReason && {
+        label: 'Add to Queue',
+        onClick: () => {
+          void (async () => {
+            const track = await resolvePlaybackTrack(row)
+            addToQueue(track)
+            setNotification(`Added to queue: ${row.title ?? 'Track'}`)
+          })()
+        },
+      },
+      shareUrl ? {
+        label: 'Share Song Link',
+        onClick: () => {
+          void window.puros.app.copyToClipboard(shareUrl).then(() => setNotification('Song link copied'))
+        },
+      } : null,
+    ])
+  }, [addToQueue, resolvePlaybackTrack, setNotification, visibleRows])
+
+  const handleOpenArtist = useCallback(async (row: HomeProviderTrack) => {
     const artistId = row.catalogArtistId
       ?? (row.catalogTrackId ? (await window.puros.catalog.getTrack(row.catalogTrackId))?.primaryArtistId : null)
     if (artistId) {
@@ -320,8 +294,7 @@ export default function ProviderCollectionView({
     }
   }, [openCatalogArtist])
 
-  const handleOpenAlbum = useCallback(async (event: React.MouseEvent, row: HomeProviderTrack) => {
-    event.stopPropagation()
+  const handleOpenAlbum = useCallback(async (row: HomeProviderTrack) => {
     const albumId = row.catalogAlbumId
       ?? (row.catalogTrackId ? (await window.puros.catalog.getTrack(row.catalogTrackId))?.albumId : null)
     if (albumId) {
@@ -329,185 +302,66 @@ export default function ProviderCollectionView({
     }
   }, [openCatalogAlbum])
 
+  const kindLabel = collection.sourceType === 'station' ? 'Station' : collection.sourceType === 'mix' ? 'Mix' : 'Playlist'
+  const providerUrl = bundle?.providerUrl ?? collection.providerUrl
+  const actions: CollectionAction[] = [
+    { id: 'play', label: 'Play', icon: Play, variant: 'primary', onClick: () => { void handlePlayCollection() }, disabled: !rows.length },
+    { id: 'shuffle', label: 'Shuffle', icon: Shuffle, onClick: () => { void handleShuffleCollection() }, disabled: !rows.length },
+  ]
+  if (providerUrl) {
+    actions.push({
+      id: 'open-source',
+      label: `Open in ${providerDisplayName}`,
+      icon: ExternalLink,
+      variant: 'quiet',
+      align: 'end',
+      onClick: () => { void window.puros.app.openExternal(providerUrl) },
+    })
+  }
+
   return (
-    <div className="flex-1 flex flex-col min-h-0">
-      <div className="px-6 py-6 shrink-0 border-b border-white/5">
-        <div className="flex flex-col xl:flex-row gap-6">
-          {bundle?.artworkUrl || collection.artworkUrl ? (
-            <img
-              src={bundle?.artworkUrl ?? collection.artworkUrl ?? ''}
-              alt=""
-              className="w-40 h-40 rounded-3xl object-cover shrink-0 bg-zinc-900 border border-white/5"
-            />
-          ) : (
-            <div className="w-40 h-40 rounded-3xl shrink-0 bg-white/[0.04] border border-white/5 flex items-center justify-center text-zinc-600 text-5xl font-semibold">
-              {collection.title.charAt(0).toUpperCase()}
-            </div>
-          )}
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-3">
-              <p className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">
-                {collection.sourceType === 'station' ? 'Station' : collection.sourceType === 'mix' ? 'Mix' : 'Playlist'}
-              </p>
-            </div>
-            <h1 className="text-4xl font-semibold text-zinc-100 mt-2 truncate">{bundle?.title ?? collection.title}</h1>
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-zinc-400">
-              <ProviderBadge provider={collection.provider} compact />
-              <span>•</span>
-              <span>{rows.length} {rows.length === 1 ? 'track' : 'tracks'}</span>
-              <span>•</span>
-              <span>Read-only</span>
-            </div>
-            {(bundle?.subtitle ?? collection.subtitle) ? (
-              <p className="mt-4 max-w-2xl text-sm text-zinc-500">
-                {bundle?.subtitle ?? collection.subtitle}
-              </p>
-            ) : null}
-            <div className="flex flex-wrap gap-2 mt-5">
-              <button
-                onClick={handlePlayCollection}
-                disabled={!rows.length}
-                className="px-4 py-2 rounded-xl bg-white text-zinc-950 text-sm font-medium hover:bg-zinc-200 transition-colors disabled:opacity-40"
-              >
-                Play
-              </button>
-              <button
-                onClick={handleShuffleCollection}
-                disabled={!rows.length}
-                className="px-4 py-2 rounded-xl bg-white/[0.06] border border-white/10 text-zinc-100 text-sm hover:bg-white/[0.1] transition-colors disabled:opacity-40"
-              >
-                Shuffle
-              </button>
-              {(bundle?.providerUrl ?? collection.providerUrl) ? (
-                <button
-                  onClick={() => { void window.puros.app.openExternal(bundle?.providerUrl ?? collection.providerUrl ?? '') }}
-                  className="px-4 py-2 rounded-xl bg-white/[0.03] border border-white/10 text-zinc-300 text-sm hover:bg-white/[0.08] transition-colors"
-                >
-                  Open in {providerDisplayName}
-                </button>
-              ) : null}
-            </div>
-            <div className="mt-5 max-w-xl">
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder={`Search inside this ${collection.sourceType === 'station' ? 'station' : collection.sourceType}...`}
-                className="w-full px-4 py-3 rounded-2xl bg-white/[0.04] border border-white/10 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-white/20"
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-6 py-6">
-        {loading ? (
-          <div className="flex items-center justify-center h-full">
-            <p className="text-sm text-zinc-500">Loading...</p>
-          </div>
-        ) : rows.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full gap-3">
-            <p className="text-sm text-zinc-500">This collection is empty</p>
-          </div>
-        ) : visibleRows.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full gap-3">
-            <p className="text-sm text-zinc-500">No matching tracks</p>
-            <p className="text-xs text-zinc-600">Try a different title, artist, or album search.</p>
-          </div>
-        ) : (
-          <div className="rounded-2xl border border-white/5 overflow-hidden">
-            <table className="w-full">
-              <thead className="bg-white/[0.03] sticky top-0">
-                <tr className="text-[11px] uppercase tracking-wider text-zinc-500">
-                  <th className="text-left px-4 py-3 font-medium w-10">#</th>
-                  <th className="text-left px-4 py-3 font-medium">Title</th>
-                  <th className="text-left px-4 py-3 font-medium hidden md:table-cell">Artist</th>
-                  <th className="text-left px-4 py-3 font-medium hidden lg:table-cell">Album</th>
-                  <th className="text-right px-4 py-3 font-medium">Time</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleRows.map((row, index) => (
-                  <tr
-                    key={row.id}
-                    onClick={() => handlePlayTrack(index)}
-                    onContextMenu={(event) => handleContextMenu(event, index)}
-                    className="group border-t border-white/[0.04] cursor-pointer hover:bg-white/[0.04] transition-colors"
-                  >
-                    <td className="px-4 py-3 text-xs text-zinc-500 font-mono">
-                      {index + 1}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <ArtworkThumbnail src={row.artworkUrl} size={40} />
-                        <div className="min-w-0">
-                          <p className="text-sm text-zinc-100 truncate">{row.title}</p>
-                          <div className="flex items-center gap-2 mt-0.5 min-w-0 md:hidden">
-                            <span className="text-xs text-zinc-500 truncate">{row.artist}</span>
-                          </div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-sm text-zinc-400 truncate hidden md:table-cell">
-                      {row.catalogTrackId || row.catalogArtistId ? (
-                        <button
-                          className="truncate text-zinc-400 hover:text-zinc-100 transition-colors"
-                          onClick={(event) => { void handleOpenArtist(event, row) }}
-                        >
-                          {row.artist}
-                        </button>
-                      ) : (
-                        row.artist
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-zinc-400 truncate hidden lg:table-cell">
-                      {row.catalogTrackId || row.catalogAlbumId ? (
-                        <button
-                          className="truncate text-zinc-400 hover:text-zinc-100 transition-colors"
-                          onClick={(event) => { void handleOpenAlbum(event, row) }}
-                        >
-                          {row.album}
-                        </button>
-                      ) : (
-                        row.album
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-xs text-zinc-500 font-mono text-right">
-                      {formatDuration(row.duration || 0)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {contextMenu && (
-        <div
-          ref={(node) => { contextMenuRef.current = node }}
-          className="fixed z-50 min-w-52 py-1 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-          onClick={(event) => event.stopPropagation()}
-        >
-          <button
-            className="w-full text-left px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800 transition-colors"
-            onClick={() => { void handleAddTrackToQueue() }}
-          >
-            Add to Queue
-          </button>
-          {getProviderTrackShareUrl({
-            providerUrl: visibleRows[contextMenu.rowIndex]?.providerUrl,
-          }) && (
-            <button
-              className="w-full text-left px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800 transition-colors"
-              onClick={() => { void handleShareTrackLink() }}
-            >
-              Share Song Link
-            </button>
-          )}
-        </div>
+    <CollectionView
+      kind={kindLabel}
+      title={bundle?.title ?? collection.title}
+      artworkSrc={bundle?.artworkUrl ?? collection.artworkUrl ?? null}
+      byline={<ProviderBadge provider={collection.provider} compact />}
+      chips={[
+        { id: 'tracks', icon: ListMusic, label: `${rows.length} ${rows.length === 1 ? 'track' : 'tracks'}` },
+        { id: 'read-only', icon: Lock, label: 'Read-only' },
+      ]}
+      description={bundle?.subtitle ?? collection.subtitle}
+      actions={actions}
+      search={{
+        value: searchQuery,
+        onChange: setSearchQuery,
+        placeholder: `Search inside this ${collection.sourceType === 'station' ? 'station' : collection.sourceType}...`,
+      }}
+    >
+      {loading ? (
+        <TrackListSkeleton rows={8} />
+      ) : rows.length === 0 ? (
+        <PageStatus title="This collection is empty" />
+      ) : visibleRows.length === 0 ? (
+        <PageStatus title="No matching tracks" hint="Try a different title, artist, or album search." />
+      ) : (
+        <TrackList
+          rows={visibleRows.map((row, index): TrackListRow => ({
+            key: row.id,
+            number: index + 1,
+            title: row.title,
+            artworkSrc: row.artworkUrl,
+            artist: row.artist,
+            onOpenArtist: row.catalogTrackId || row.catalogArtistId ? () => { void handleOpenArtist(row) } : undefined,
+            album: row.album,
+            onOpenAlbum: row.catalogTrackId || row.catalogAlbumId ? () => { void handleOpenAlbum(row) } : undefined,
+            trailing: formatTrackDuration(row.duration || 0),
+            active: row.id === currentTrackId,
+            unavailable: row.unavailableReason ? unavailableTrackLabel(row.unavailableReason) : null,
+          }))}
+          onPlay={(index) => { void handlePlayTrack(index) }}
+          onContextMenu={handleContextMenu}
+        />
       )}
-    </div>
+    </CollectionView>
   )
 }

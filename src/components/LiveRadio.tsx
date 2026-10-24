@@ -1,8 +1,10 @@
-import { Play, Plus, X } from 'lucide-react'
+import { Play, Plus, Trash2, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import type { LiveRadioDirectoryFilters, Station } from '../services/liveRadio/types'
 import { getStationDefaultStream, stationToTrack } from '../services/liveRadio/track'
 import { usePlayerStore } from '../store/playerStore'
+import MediaTabs from './MediaTabs'
+import { Button, PageHeader, PageStatus, SearchField } from './ui'
 
 type Tab = 'browse' | 'mine'
 
@@ -29,12 +31,12 @@ function StationLogo({ station }: { station: Station }) {
       <img
         src={station.logoUrl}
         alt=""
-        className="h-11 w-11 rounded object-cover bg-zinc-900"
+        className="h-11 w-11 rounded-md object-cover bg-zinc-900"
       />
     )
   }
   return (
-    <div className="flex h-11 w-11 items-center justify-center rounded bg-zinc-800 text-xs font-semibold text-zinc-500">
+    <div className="flex h-11 w-11 items-center justify-center rounded-md bg-zinc-800 text-xs font-semibold text-zinc-500">
       {station.name.slice(0, 2).toUpperCase()}
     </div>
   )
@@ -55,7 +57,7 @@ function StationRow({
     <button
       type="button"
       onClick={onSelect}
-      className={`grid w-full grid-cols-[auto_1fr_auto] items-center gap-3 rounded-md px-3 py-2 text-left transition-colors ${
+      className={`grid w-full grid-cols-[auto_1fr_auto] items-center gap-3 rounded-xl px-3 py-2 text-left transition-colors ${
         selected ? 'bg-white/10' : 'hover:bg-white/[0.05]'
       }`}
     >
@@ -64,7 +66,7 @@ function StationRow({
         <div className="flex items-center gap-2">
           <p className="truncate text-sm font-medium text-zinc-100">{station.name}</p>
           {station.isFavorite && (
-            <span className="rounded bg-red-400/10 px-1.5 py-0.5 text-[10px] font-medium text-red-300">
+            <span className="rounded-full bg-red-400/10 px-2 py-0.5 text-[10px] font-medium text-red-300">
               Saved
             </span>
           )}
@@ -125,17 +127,10 @@ function AddStreamDialog({
         if (event.target === event.currentTarget) onClose()
       }}
     >
-      <div className="w-[28rem] max-w-[calc(100vw-2rem)] rounded-lg border border-white/10 bg-zinc-900 p-5 shadow-2xl">
+      <div className="w-[28rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-white/10 bg-zinc-900 p-5 shadow-2xl">
         <div className="mb-4 flex items-center justify-between gap-3">
           <h2 className="text-sm font-semibold text-zinc-100">Add Stream</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-zinc-500 transition-colors hover:text-zinc-200"
-            title="Close"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <Button variant="ghost" size="sm" iconOnly icon={X} label="Close" onClick={onClose} />
         </div>
         <div className="space-y-3">
           <input
@@ -143,7 +138,7 @@ function AddStreamDialog({
             value={url}
             onChange={(event) => setUrl(event.target.value)}
             placeholder="https://station.example/stream.mp3"
-            className="w-full rounded-md border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-zinc-100 outline-none transition-colors placeholder:text-zinc-600 focus:border-white/20"
+            className="h-9 w-full rounded-full border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-zinc-100 outline-none transition-colors placeholder:text-zinc-500 hover:border-white/15 focus:border-white/20"
             autoFocus
           />
           <input
@@ -151,30 +146,17 @@ function AddStreamDialog({
             value={name}
             onChange={(event) => setName(event.target.value)}
             placeholder="Display name"
-            className="w-full rounded-md border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-zinc-100 outline-none transition-colors placeholder:text-zinc-600 focus:border-white/20"
+            className="h-9 w-full rounded-full border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-zinc-100 outline-none transition-colors placeholder:text-zinc-500 hover:border-white/15 focus:border-white/20"
           />
           {error && (
-            <p className="rounded-md border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-200">
+            <p className="rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-200">
               {error}
             </p>
           )}
         </div>
         <div className="mt-5 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-sm text-zinc-400 transition-colors hover:text-zinc-200"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={submit}
-            disabled={saving || !url.trim()}
-            className="rounded-md bg-white px-3 py-1.5 text-sm font-medium text-zinc-950 transition-colors hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {saving ? 'Checking...' : 'Add'}
-          </button>
+          <Button variant="ghost" label="Cancel" onClick={onClose} />
+          <Button variant="primary" icon={Plus} label={saving ? 'Checking…' : 'Add'} onClick={submit} disabled={saving || !url.trim()} />
         </div>
       </div>
     </div>
@@ -285,89 +267,57 @@ export default function LiveRadio() {
   const stream = selectedStation ? getStationDefaultStream(selectedStation) : null
 
   return (
-    <div className="flex h-full min-h-0 w-full bg-zinc-950">
+    <div className="flex h-full min-h-0 w-full bg-black">
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="shrink-0 border-b border-white/10 px-6 py-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <h1 className="text-xl font-semibold text-zinc-100">Live Radio</h1>
-              <p className="mt-1 text-sm text-zinc-500">Browse Radio Browser stations or keep your own streams.</p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowAddDialog(true)}
-              className="inline-flex items-center gap-2 rounded-md bg-white px-3 py-2 text-sm font-medium text-zinc-950 transition-colors hover:bg-zinc-200"
-            >
-              <Plus className="h-4 w-4" />
-              Add Stream
-            </button>
+        <PageHeader
+          kicker="Radio"
+          title="Live Radio"
+          subtitle="Browse Radio Browser stations or keep your own streams."
+          actions={<Button variant="primary" icon={Plus} label="Add Stream" onClick={() => setShowAddDialog(true)} />}
+        />
+        <MediaTabs
+          value={tab}
+          onChange={setTab}
+          options={[
+            { id: 'browse', label: 'Browse' },
+            { id: 'mine', label: 'My Live Radio' },
+          ]}
+        />
+        {tab === 'browse' && (
+          <div className="shrink-0 flex flex-wrap items-center gap-2 px-6 pt-2 pb-3">
+            <SearchField value={query} onChange={setQuery} placeholder="Search stations" className="w-64" />
+            <select value={tag} onChange={(event) => setTag(event.target.value)} className="h-9 rounded-full border border-white/[0.08] bg-white/[0.04] px-3 text-sm text-zinc-300 outline-none transition-colors hover:border-white/15 focus:border-white/20">
+              <option value="">Genre</option>
+              {filters.tags.slice(0, 50).map((option) => (
+                <option key={option.value} value={option.value}>{option.name}</option>
+              ))}
+            </select>
+            <select value={countryCode} onChange={(event) => setCountryCode(event.target.value)} className="h-9 rounded-full border border-white/[0.08] bg-white/[0.04] px-3 text-sm text-zinc-300 outline-none transition-colors hover:border-white/15 focus:border-white/20">
+              <option value="">Country</option>
+              {filters.countries.map((option) => (
+                <option key={option.value} value={option.value}>{option.name}</option>
+              ))}
+            </select>
+            <select value={language} onChange={(event) => setLanguage(event.target.value)} className="h-9 rounded-full border border-white/[0.08] bg-white/[0.04] px-3 text-sm text-zinc-300 outline-none transition-colors hover:border-white/15 focus:border-white/20">
+              <option value="">Language</option>
+              {filters.languages.slice(0, 50).map((option) => (
+                <option key={option.value} value={option.value}>{option.name}</option>
+              ))}
+            </select>
+            <select value={sort} onChange={(event) => setSort(event.target.value as typeof sort)} className="h-9 rounded-full border border-white/[0.08] bg-white/[0.04] px-3 text-sm text-zinc-300 outline-none transition-colors hover:border-white/15 focus:border-white/20">
+              <option value="popular">Popular</option>
+              <option value="votes">Votes</option>
+              <option value="name">Name</option>
+            </select>
           </div>
-
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setTab('browse')}
-              className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
-                tab === 'browse' ? 'bg-white text-zinc-950' : 'bg-white/[0.05] text-zinc-400 hover:text-zinc-100'
-              }`}
-            >
-              Browse
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab('mine')}
-              className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
-                tab === 'mine' ? 'bg-white text-zinc-950' : 'bg-white/[0.05] text-zinc-400 hover:text-zinc-100'
-              }`}
-            >
-              My Live Radio
-            </button>
-          </div>
-
-          {tab === 'browse' && (
-            <div className="mt-4 grid grid-cols-[minmax(12rem,1fr)_repeat(4,auto)] gap-2">
-              <input
-                type="search"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search stations..."
-                className="min-w-0 rounded-md border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-white/20"
-              />
-              <select value={tag} onChange={(event) => setTag(event.target.value)} className="rounded-md border border-white/10 bg-zinc-900 px-2 py-2 text-sm text-zinc-300 outline-none">
-                <option value="">Genre</option>
-                {filters.tags.slice(0, 50).map((option) => (
-                  <option key={option.value} value={option.value}>{option.name}</option>
-                ))}
-              </select>
-              <select value={countryCode} onChange={(event) => setCountryCode(event.target.value)} className="rounded-md border border-white/10 bg-zinc-900 px-2 py-2 text-sm text-zinc-300 outline-none">
-                <option value="">Country</option>
-                {filters.countries.map((option) => (
-                  <option key={option.value} value={option.value}>{option.name}</option>
-                ))}
-              </select>
-              <select value={language} onChange={(event) => setLanguage(event.target.value)} className="rounded-md border border-white/10 bg-zinc-900 px-2 py-2 text-sm text-zinc-300 outline-none">
-                <option value="">Language</option>
-                {filters.languages.slice(0, 50).map((option) => (
-                  <option key={option.value} value={option.value}>{option.name}</option>
-                ))}
-              </select>
-              <select value={sort} onChange={(event) => setSort(event.target.value as typeof sort)} className="rounded-md border border-white/10 bg-zinc-900 px-2 py-2 text-sm text-zinc-300 outline-none">
-                <option value="popular">Popular</option>
-                <option value="votes">Votes</option>
-                <option value="name">Name</option>
-              </select>
-            </div>
-          )}
-        </div>
+        )}
 
         <div className="grid min-h-0 flex-1 grid-cols-[minmax(20rem,1fr)_24rem]">
-          <div className="min-h-0 overflow-y-auto p-4">
-            {error && <p className="rounded-md border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-200">{error}</p>}
-            {loading && <p className="px-3 py-2 text-sm text-zinc-500">Loading stations...</p>}
+          <div className="min-h-0 overflow-y-auto px-4 pb-4">
+            {error && <p className="rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-200">{error}</p>}
+            {loading && <PageStatus loading title="Loading stations…" />}
             {!loading && activeList.length === 0 && (
-              <p className="px-3 py-2 text-sm text-zinc-500">
-                {tab === 'mine' ? 'No saved stations yet.' : 'No stations found.'}
-              </p>
+              <PageStatus title={tab === 'mine' ? 'No saved stations yet.' : 'No stations found.'} />
             )}
             <div className="space-y-1">
               {activeList.map((station) => (
@@ -382,7 +332,7 @@ export default function LiveRadio() {
             </div>
           </div>
 
-          <aside className="min-h-0 border-l border-white/10 p-5">
+          <aside className="min-h-0 border-l border-white/5 p-5">
             {selectedStation ? (
               <div className="flex h-full min-h-0 flex-col">
                 <div className="flex items-start gap-3">
@@ -406,7 +356,7 @@ export default function LiveRadio() {
                     <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">Streams</p>
                     <div className="mt-2 space-y-1">
                       {selectedStation.streams.map((item, index) => (
-                        <div key={`${item.url}:${index}`} className="rounded-md bg-white/[0.04] px-2 py-2 text-xs text-zinc-400">
+                        <div key={`${item.url}:${index}`} className="rounded-xl bg-white/[0.04] px-3 py-2 text-xs text-zinc-400">
                           <p className="truncate">{item.url}</p>
                           <p className="mt-1 text-zinc-600">
                             {[item.codec ?? selectedStation.codec, item.bitrate ?? selectedStation.bitrate ? `${item.bitrate ?? selectedStation.bitrate}kbps` : null].filter(Boolean).join(' · ') || 'Stream'}
@@ -418,31 +368,11 @@ export default function LiveRadio() {
                 </div>
 
                 <div className="mt-auto flex flex-wrap gap-2 pt-5">
-                  <button
-                    type="button"
-                    onClick={() => playStation(selectedStation)}
-                    disabled={!stream}
-                    className="inline-flex items-center gap-2 rounded-md bg-white px-3 py-2 text-sm font-medium text-zinc-950 transition-colors hover:bg-zinc-200 disabled:opacity-40"
-                  >
-                    <Play className="h-4 w-4" fill="currentColor" />
-                    Play
-                  </button>
+                  <Button variant="primary" icon={Play} iconFilled label="Play" onClick={() => playStation(selectedStation)} disabled={!stream} />
                   {selectedStation.isFavorite || selectedStation.isCustom ? (
-                    <button
-                      type="button"
-                      onClick={() => void removeStation(selectedStation)}
-                      className="rounded-md border border-white/10 px-3 py-2 text-sm text-zinc-300 transition-colors hover:bg-white/[0.05]"
-                    >
-                      Remove
-                    </button>
+                    <Button variant="quiet" icon={Trash2} label="Remove" onClick={() => void removeStation(selectedStation)} />
                   ) : (
-                    <button
-                      type="button"
-                      onClick={() => void saveStation(selectedStation)}
-                      className="rounded-md border border-white/10 px-3 py-2 text-sm text-zinc-300 transition-colors hover:bg-white/[0.05]"
-                    >
-                      Add to My Live Radio
-                    </button>
+                    <Button icon={Plus} label="Add to My Live Radio" onClick={() => void saveStation(selectedStation)} />
                   )}
                 </div>
               </div>

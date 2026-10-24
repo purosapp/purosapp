@@ -1,26 +1,28 @@
 /**
  * PlaylistView — shows tracks in a playlist with drag-to-reorder,
- * context menu actions, and click-to-play.
+ * native context menu actions, and click-to-play.
  */
 
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { usePlayerStore, type PlaybackContext, type Track } from '../store/playerStore'
 import { useAppShellStore } from '../store/appShellStore'
 import type { TrackRow, PlaylistInfo } from '../../electron/preload'
-import ArtworkThumbnail from './ArtworkThumbnail'
+import TrackList, { TrackListSkeleton, type TrackListRow } from './TrackList'
+import { PageStatus } from './ui'
+import { formatTrackDuration } from '../utils/formatTime'
+import { ArrowDownCircle, Download, HardDrive, ImageOff, ImagePlus, Layers, ListMusic, Lock, Play, Shuffle, X } from 'lucide-react'
 import ProviderBadge from './ProviderBadge'
+import CollectionView, { type CollectionAction, type CollectionMetaChip } from './CollectionView'
 import { trackRowToTrack } from '../store/libraryStore'
 import { artworkUrl } from '../utils/artworkUrl'
+import { showContextMenu } from '../utils/contextMenu'
 import { recordRecentlyPlayedPlaylist } from '../services/homeRecents'
+import { unavailableTrackLabel } from '../utils/trackAvailability'
+import { isPlaylistDownloadActive, useDownloadStore, usePlaylistDownloadState } from '../store/downloadStore'
+import { formatBytes } from '../utils/formatBytes'
 
 interface PlaylistViewProps {
   playlistId: number
-}
-
-function formatDuration(seconds: number): string {
-  const m = Math.floor(seconds / 60)
-  const s = Math.floor(seconds % 60)
-  return `${m}:${s.toString().padStart(2, '0')}`
 }
 
 function rowToTrack(row: TrackRow): Track {
@@ -63,19 +65,19 @@ export default function PlaylistView({ playlistId }: PlaylistViewProps) {
   const [playlistArtworkId, setPlaylistArtworkId] = useState<string | null>(null)
   const [playlistArtworkSrc, setPlaylistArtworkSrc] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; rowIndex: number } | null>(null)
-  const [isAddToPlaylistMenuOpen, setIsAddToPlaylistMenuOpen] = useState(false)
   const [selectedPlaylistItemIds, setSelectedPlaylistItemIds] = useState<number[]>([])
   const [selectionAnchorId, setSelectionAnchorId] = useState<number | null>(null)
-  const contextMenuRef = useRef<HTMLDivElement>(null)
-  const addToPlaylistCloseTimerRef = useRef<number | null>(null)
 
   const dragIndexRef = useRef<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
 
   const { setQueue, addToQueue, setNotification } = usePlayerStore()
+  const currentTrackId = usePlayerStore((state) => state.currentTrack?.id)
   const openCatalogArtist = useAppShellStore((s) => s.openCatalogArtist)
   const openCatalogAlbum = useAppShellStore((s) => s.openCatalogAlbum)
+  const downloadState = usePlaylistDownloadState(playlistId)
+  const downloadJob = useDownloadStore((state) => state.jobs[playlistId])
+  const downloadedKeys = useMemo(() => new Set(downloadState?.downloadedKeys ?? []), [downloadState])
 
   const applyPlaylistData = useCallback((trackRows: TrackRow[], playlists: PlaylistInfo[]) => {
     setRows(trackRows)
@@ -168,42 +170,6 @@ export default function PlaylistView({ playlistId }: PlaylistViewProps) {
     return () => { cancelled = true }
   }, [playlistArtworkId, playlistId])
 
-  useEffect(() => {
-    if (!contextMenu) return
-    const close = () => setContextMenu(null)
-    window.addEventListener('click', close)
-    window.addEventListener('contextmenu', close)
-    return () => {
-      window.removeEventListener('click', close)
-      window.removeEventListener('contextmenu', close)
-    }
-  }, [contextMenu])
-
-  useEffect(() => {
-    if (!contextMenu) {
-      setIsAddToPlaylistMenuOpen(false)
-    }
-  }, [contextMenu])
-
-  const clearAddToPlaylistCloseTimer = useCallback(() => {
-    if (addToPlaylistCloseTimerRef.current != null) {
-      window.clearTimeout(addToPlaylistCloseTimerRef.current)
-      addToPlaylistCloseTimerRef.current = null
-    }
-  }, [])
-
-  const scheduleAddToPlaylistClose = useCallback(() => {
-    clearAddToPlaylistCloseTimer()
-    addToPlaylistCloseTimerRef.current = window.setTimeout(() => {
-      setIsAddToPlaylistMenuOpen(false)
-      addToPlaylistCloseTimerRef.current = null
-    }, 120)
-  }, [clearAddToPlaylistCloseTimer])
-
-  useEffect(() => () => {
-    clearAddToPlaylistCloseTimer()
-  }, [clearAddToPlaylistCloseTimer])
-
   const normalizedSearch = searchQuery.trim().toLowerCase()
   const playbackContext: PlaybackContext = useMemo(() => ({
     kind: 'playlist',
@@ -285,7 +251,7 @@ export default function PlaylistView({ playlistId }: PlaylistViewProps) {
   }, [rows, selectionAnchorId])
 
   const handlePlayTrack = useCallback(async (
-    event: React.MouseEvent<HTMLTableRowElement>,
+    event: React.MouseEvent<HTMLDivElement>,
     originalIndex: number,
   ) => {
     const row = rows[originalIndex]
@@ -357,59 +323,7 @@ export default function PlaylistView({ playlistId }: PlaylistViewProps) {
     setNotification('Playlist cover reset')
   }, [playlistId, setNotification])
 
-  const handleContextMenu = useCallback((e: React.MouseEvent, rowIndex: number) => {
-    e.preventDefault()
-    e.stopPropagation()
-
-    const row = rows[rowIndex]
-    const playlistItemId = row ? getPlaylistItemId(row) : null
-    if (isLocalPlaylist && playlistItemId != null && !selectedPlaylistItemIdSet.has(playlistItemId)) {
-      setSelectedPlaylistItemIds([playlistItemId])
-      setSelectionAnchorId(playlistItemId)
-    }
-
-    let itemCount = 2
-    if (isLocalPlaylist && canCreateSmartStack) itemCount += 1
-    if (isLocalPlaylist && row?.playlist_stack_id != null) itemCount += 2
-    if (!playlistReadOnly) itemCount += 1
-
-    const menuW = 220
-    const menuH = itemCount * 36 + 12
-    setIsAddToPlaylistMenuOpen(false)
-    setContextMenu({
-      x: Math.min(e.clientX, window.innerWidth - menuW - 8),
-      y: Math.min(e.clientY, window.innerHeight - menuH - 8),
-      rowIndex,
-    })
-  }, [canCreateSmartStack, isLocalPlaylist, playlistReadOnly, rows, selectedPlaylistItemIdSet])
-
-  const handleAddTrackToQueue = useCallback(() => {
-    if (!contextMenu) return
-    const row = rows[contextMenu.rowIndex]
-    if (!row) return
-    setContextMenu(null)
-    addToQueue(rowToTrack(row))
-    setNotification(`Added to queue: ${row.title ?? 'Track'}`)
-  }, [addToQueue, contextMenu, rows, setNotification])
-
-  const getContextRows = useCallback((): TrackRow[] => {
-    if (!contextMenu) return []
-    const row = rows[contextMenu.rowIndex]
-    if (!row) return []
-
-    const playlistItemId = getPlaylistItemId(row)
-    if (playlistItemId != null && selectedPlaylistItemIdSet.has(playlistItemId)) {
-      return rows.filter((entry) => {
-        const entryPlaylistItemId = getPlaylistItemId(entry)
-        return entryPlaylistItemId != null && selectedPlaylistItemIdSet.has(entryPlaylistItemId)
-      })
-    }
-
-    return [row]
-  }, [contextMenu, rows, selectedPlaylistItemIdSet])
-
-  const addRowsToPlaylist = useCallback(async (targetPlaylist: PlaylistInfo) => {
-    const contextRows = getContextRows()
+  const addRowsToPlaylist = useCallback(async (contextRows: TrackRow[], targetPlaylist: PlaylistInfo) => {
     if (contextRows.length === 0) return
 
     let addedCount = 0
@@ -420,9 +334,6 @@ export default function PlaylistView({ playlistId }: PlaylistViewProps) {
       else addedCount += 1
     }
 
-    setContextMenu(null)
-    setIsAddToPlaylistMenuOpen(false)
-
     if (addedCount > 0 && skippedCount > 0) {
       setNotification(`Added ${addedCount} track${addedCount === 1 ? '' : 's'} to "${targetPlaylist.name}" • ${skippedCount} already there`)
       return
@@ -432,58 +343,119 @@ export default function PlaylistView({ playlistId }: PlaylistViewProps) {
       return
     }
     setNotification(`Already in "${targetPlaylist.name}"`)
-  }, [getContextRows, setNotification])
+  }, [setNotification])
 
-  const handleCreatePlaylistAndAddTracks = useCallback(async () => {
-    const contextRows = getContextRows()
+  const createPlaylistAndAddRows = useCallback(async (contextRows: TrackRow[]) => {
     if (contextRows.length === 0) return
 
     const playlistName = window.prompt('New playlist name')
     if (!playlistName?.trim()) return
 
     const newPlaylist = await window.puros.playlists.create(playlistName.trim(), undefined, playlistSource)
-    await addRowsToPlaylist(newPlaylist)
-  }, [addRowsToPlaylist, getContextRows, playlistSource])
+    await addRowsToPlaylist(contextRows, newPlaylist)
+  }, [addRowsToPlaylist, playlistSource])
 
-  const handleCreateSmartStack = useCallback(async () => {
-    if (!canCreateSmartStack) return
-    setContextMenu(null)
-    await window.puros.playlists.createSmartStack(playlistId, selectedPlaylistItemIds)
+  const createSmartStack = useCallback(async (playlistItemIds: number[]) => {
+    await window.puros.playlists.createSmartStack(playlistId, playlistItemIds)
     setNotification('Created Smart Stack')
-  }, [canCreateSmartStack, playlistId, selectedPlaylistItemIds, setNotification])
+  }, [playlistId, setNotification])
 
-  const handleRemoveFromStack = useCallback(async () => {
-    if (!contextMenu) return
-    const row = rows[contextMenu.rowIndex]
-    const playlistItemId = row ? getPlaylistItemId(row) : null
-    if (!row || playlistItemId == null) return
-    setContextMenu(null)
+  const removeFromStack = useCallback(async (playlistItemId: number) => {
     await window.puros.playlists.removeFromSmartStack(playlistId, playlistItemId)
     setNotification('Removed from Smart Stack')
-  }, [contextMenu, playlistId, rows, setNotification])
+  }, [playlistId, setNotification])
 
-  const handleDissolveStack = useCallback(async () => {
-    if (!contextMenu) return
-    const row = rows[contextMenu.rowIndex]
-    if (!row || row.playlist_stack_id == null) return
-    setContextMenu(null)
-    await window.puros.playlists.dissolveSmartStack(playlistId, row.playlist_stack_id)
+  const dissolveStack = useCallback(async (stackId: number) => {
+    await window.puros.playlists.dissolveSmartStack(playlistId, stackId)
     setNotification('Dissolved Smart Stack')
-  }, [contextMenu, playlistId, rows, setNotification])
+  }, [playlistId, setNotification])
 
-  const handleRemoveTrack = useCallback(async () => {
-    if (!contextMenu) return
-    const row = rows[contextMenu.rowIndex]
-    if (!row) return
+  const removeTrack = useCallback(async (row: TrackRow) => {
     const playlistItemId = getPlaylistItemId(row)
-    setContextMenu(null)
     await window.puros.playlists.removeTrack(playlistId, playlistItemId ?? row.id)
-    setRows((prev) => prev.filter((_, index) => index !== contextMenu.rowIndex))
+    setRows((prev) => prev.filter((entry) => entry !== row))
     if (playlistItemId != null) {
       setSelectedPlaylistItemIds((prev) => prev.filter((value) => value !== playlistItemId))
-      if (selectionAnchorId === playlistItemId) setSelectionAnchorId(null)
+      setSelectionAnchorId((prev) => (prev === playlistItemId ? null : prev))
     }
-  }, [contextMenu, playlistId, rows, selectionAnchorId])
+  }, [playlistId])
+
+  const handleContextMenu = useCallback((e: React.MouseEvent, rowIndex: number) => {
+    e.preventDefault()
+    e.stopPropagation()
+
+    const row = rows[rowIndex]
+    if (!row) return
+    const playlistItemId = getPlaylistItemId(row)
+    const isRowSelected = playlistItemId != null && selectedPlaylistItemIdSet.has(playlistItemId)
+    // Right-clicking outside the selection makes that row the selection.
+    if (isLocalPlaylist && playlistItemId != null && !isRowSelected) {
+      setSelectedPlaylistItemIds([playlistItemId])
+      setSelectionAnchorId(playlistItemId)
+    }
+
+    const contextRows = isRowSelected
+      ? rows.filter((entry) => {
+          const entryPlaylistItemId = getPlaylistItemId(entry)
+          return entryPlaylistItemId != null && selectedPlaylistItemIdSet.has(entryPlaylistItemId)
+        })
+      : [row]
+    const stackId = isLocalPlaylist ? row.playlist_stack_id ?? null : null
+    const stackPlaylistItemIds = selectedPlaylistItemIds
+
+    void showContextMenu([
+      {
+        label: 'Add to Queue',
+        onClick: () => {
+          addToQueue(rowToTrack(row))
+          setNotification(`Added to queue: ${row.title ?? 'Track'}`)
+        },
+      },
+      {
+        label: contextRows.length > 1 ? `Add ${contextRows.length} Tracks to Playlist` : 'Add to Playlist',
+        submenu: [
+          { label: 'Create New Playlist…', onClick: () => { void createPlaylistAndAddRows(contextRows) } },
+          { type: 'separator' },
+          ...(localDestinationPlaylists.length > 0
+            ? localDestinationPlaylists.map((playlist) => ({
+                label: playlist.name,
+                onClick: () => { void addRowsToPlaylist(contextRows, playlist) },
+              }))
+            : [{ label: 'No other local playlists', enabled: false }]),
+        ],
+      },
+      canCreateSmartStack && (isRowSelected || playlistItemId == null) && {
+        label: 'Create Smart Stack',
+        onClick: () => { void createSmartStack(stackPlaylistItemIds) },
+      },
+      stackId != null && playlistItemId != null && {
+        label: 'Remove from Stack',
+        onClick: () => { void removeFromStack(playlistItemId) },
+      },
+      stackId != null && {
+        label: 'Dissolve Stack',
+        onClick: () => { void dissolveStack(stackId) },
+      },
+      !playlistReadOnly && { type: 'separator' },
+      !playlistReadOnly && { label: 'Remove from playlist', onClick: () => { void removeTrack(row) } },
+    ])
+  }, [
+    addRowsToPlaylist,
+    addToQueue,
+    canCreateSmartStack,
+    createPlaylistAndAddRows,
+    createSmartStack,
+    dissolveStack,
+    isLocalPlaylist,
+    localDestinationPlaylists,
+    playlistReadOnly,
+    removeFromStack,
+    removeTrack,
+    rows,
+    selectedPlaylistItemIdSet,
+    selectedPlaylistItemIds,
+    setNotification,
+  ])
 
   const handleDragStart = useCallback((e: React.DragEvent, index: number) => {
     if (playlistReadOnly) {
@@ -527,348 +499,149 @@ export default function PlaylistView({ playlistId }: PlaylistViewProps) {
     setDragOverIndex(null)
   }, [])
 
-  const contextRows = getContextRows()
-  const contextTrackCount = contextRows.length
-  const addToPlaylistSubmenuLeft = contextMenu
-    ? Math.min(contextMenu.x + 214, window.innerWidth - 248)
-    : 0
-  const addToPlaylistSubmenuTop = contextMenu
-    ? Math.min(contextMenu.y + 36, window.innerHeight - Math.min(360, localDestinationPlaylists.length * 36 + 88))
-    : 0
+  const clearSelection = () => {
+    setSelectedPlaylistItemIds([])
+    setSelectionAnchorId(null)
+  }
+  const actions: CollectionAction[] = [
+    { id: 'play', label: 'Play', icon: Play, variant: 'primary', onClick: () => { void handlePlayPlaylist() }, disabled: !rows.length },
+    { id: 'shuffle', label: 'Shuffle', icon: Shuffle, onClick: () => { void handleShufflePlaylist() }, disabled: !rows.length },
+  ]
+  if (isLocalPlaylist && selectedPlaylistItemIds.length > 0) {
+    actions.push(
+      {
+        id: 'smart-stack',
+        label: 'Create Smart Stack',
+        icon: Layers,
+        onClick: () => { void createSmartStack(selectedPlaylistItemIds) },
+        disabled: !canCreateSmartStack,
+        title: canCreateSmartStack ? 'Create Smart Stack' : 'Select adjacent playlist items to create a Smart Stack',
+      },
+      { id: 'clear-selection', label: 'Clear Selection', icon: X, variant: 'quiet', onClick: clearSelection },
+    )
+  }
+  if (isLocalPlaylist) {
+    actions.push({ id: 'set-cover', label: 'Set Cover', icon: ImagePlus, variant: 'quiet', align: 'end', onClick: () => { void handleSetPlaylistArtwork() } })
+    if (playlistArtworkId) {
+      actions.push({ id: 'reset-cover', label: 'Reset Cover', icon: ImageOff, variant: 'quiet', align: 'end', onClick: () => { void handleResetPlaylistArtwork() } })
+    }
+  }
+
+  const chips: CollectionMetaChip[] = [
+    { id: 'tracks', icon: ListMusic, label: `${rows.length} ${rows.length === 1 ? 'track' : 'tracks'}` },
+  ]
+  if (playlistReadOnly) chips.push({ id: 'read-only', icon: Lock, label: 'Read-only' })
+  if (isLocalPlaylist) chips.push({ id: 'smart-stacks', icon: Layers, label: 'Smart Stacks' })
+  if (isPlaylistDownloadActive(downloadJob) && downloadJob) {
+    const done = downloadJob.completed + downloadJob.failed + downloadJob.skipped
+    chips.push({
+      id: 'downloaded',
+      icon: Download,
+      label: downloadJob.status === 'queued' || downloadJob.total === 0
+        ? 'Download queued'
+        : downloadJob.waitingUntil ? `Download paused ${done}/${downloadJob.total} • rate limited` : `Downloading ${done}/${downloadJob.total}`,
+    })
+  } else if (downloadState?.enabled) {
+    chips.push({
+      id: 'downloaded',
+      icon: HardDrive,
+      label: `${downloadState.downloaded}/${downloadState.total} downloaded • ${formatBytes(downloadState.totalBytes)}`,
+    })
+  }
 
   return (
-    <div className="flex-1 flex flex-col min-h-0">
-      <div className="px-6 py-6 shrink-0 border-b border-white/5">
-        <div className="flex flex-col xl:flex-row gap-6">
-          {playlistArtworkSrc ? (
-            <img
-              src={playlistArtworkSrc}
-              alt=""
-              className="w-40 h-40 rounded-3xl object-cover shrink-0 bg-zinc-900 border border-white/5"
-            />
-          ) : (
-            <div className="w-40 h-40 rounded-3xl shrink-0 bg-white/[0.04] border border-white/5 flex items-center justify-center text-zinc-600 text-5xl font-semibold">
-              {(playlistName || 'P').charAt(0).toUpperCase()}
-            </div>
+    <CollectionView
+      kind="Playlist"
+      title={playlistName || 'Playlist'}
+      artworkSrc={playlistArtworkSrc}
+      byline={<ProviderBadge provider={playlistSource || 'local'} compact />}
+      chips={chips}
+      actions={actions}
+      heroExtra={isLocalPlaylist ? (
+        <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+          {selectedPlaylistItemIds.length > 0 && (
+            <span className="text-zinc-300">{selectedPlaylistItemIds.length} selected</span>
           )}
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-3">
-              <p className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">Playlist</p>
-            </div>
-            <h1 className="text-4xl font-semibold text-zinc-100 mt-2 truncate">{playlistName || 'Playlist'}</h1>
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-zinc-400">
-              <ProviderBadge provider={playlistSource || 'local'} compact />
-              <span>•</span>
-              <span>{rows.length} {rows.length === 1 ? 'track' : 'tracks'}</span>
-              {playlistReadOnly && (
+          <span>Cmd/Ctrl-click or Shift-click to select adjacent tracks for Smart Stacks.</span>
+        </div>
+      ) : undefined}
+      search={{ value: searchQuery, onChange: setSearchQuery, placeholder: 'Search inside this playlist...' }}
+    >
+      {isLoading ? (
+        <TrackListSkeleton rows={8} />
+      ) : rows.length === 0 ? (
+        <PageStatus title="This playlist is empty" hint="Drag tracks from your library" />
+      ) : visibleRows.length === 0 ? (
+        <PageStatus title="No matching tracks" hint="Try a different title, artist, or album search." />
+      ) : (
+        <TrackList
+          rows={visibleRows.map(({ row, originalIndex }, visibleIndex): TrackListRow => {
+            const track = rowToTrack(row)
+            const stackLabel = getSmartStackLabel(row)
+            const isDownloaded = !!row.source_id && downloadedKeys.has(`${row.source}:${row.source_id}`)
+            return {
+              key: String(getPlaylistItemId(row) ?? `${row.id}-${originalIndex}`),
+              number: normalizedSearch ? originalIndex + 1 : visibleIndex + 1,
+              title: row.title ?? 'Unknown Track',
+              artworkSrc: track.coverUrl,
+              artist: rowArtistName(row),
+              onOpenArtist: row.catalog_artist_id ? () => { void openCatalogArtist(row.catalog_artist_id!) } : undefined,
+              album: row.album_title || '—',
+              onOpenAlbum: row.catalog_album_id ? () => { void openCatalogAlbum(row.catalog_album_id!) } : undefined,
+              badges: stackLabel || isDownloaded ? (
                 <>
-                  <span>•</span>
-                  <span>Read-only</span>
-                </>
-              )}
-              {isLocalPlaylist && (
-                <>
-                  <span>•</span>
-                  <span>Smart Stacks enabled</span>
-                </>
-              )}
-            </div>
-            <div className="flex flex-wrap gap-2 mt-5">
-              <button
-                onClick={() => { void handlePlayPlaylist() }}
-                disabled={!rows.length}
-                className="px-4 py-2 rounded-xl bg-white text-zinc-950 text-sm font-medium hover:bg-zinc-200 transition-colors disabled:opacity-40"
-              >
-                Play Playlist
-              </button>
-              <button
-                onClick={() => { void handleShufflePlaylist() }}
-                disabled={!rows.length}
-                className="px-4 py-2 rounded-xl bg-white/[0.06] border border-white/10 text-zinc-100 text-sm hover:bg-white/[0.1] transition-colors disabled:opacity-40"
-              >
-                Shuffle
-              </button>
-              {isLocalPlaylist && (
-                <>
-                  <button
-                    onClick={() => { void handleSetPlaylistArtwork() }}
-                    className="px-4 py-2 rounded-xl bg-white/[0.04] border border-white/10 text-zinc-200 text-sm hover:bg-white/[0.08] transition-colors"
-                  >
-                    Set Cover
-                  </button>
-                  {playlistArtworkId && (
-                    <button
-                      onClick={() => { void handleResetPlaylistArtwork() }}
-                      className="px-4 py-2 rounded-xl bg-white/[0.04] border border-white/10 text-zinc-400 text-sm hover:bg-white/[0.08] hover:text-zinc-200 transition-colors"
-                    >
-                      Reset Cover
-                    </button>
+                  {isDownloaded && (
+                    <span title="Downloaded" className="shrink-0 text-accent-300/80">
+                      <ArrowDownCircle size={13} aria-label="Downloaded" />
+                    </span>
+                  )}
+                  {stackLabel && (
+                    <span className="shrink-0 rounded-full border border-accent-300/20 bg-accent-400/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-accent-200">
+                      {stackLabel}
+                    </span>
                   )}
                 </>
-              )}
-              {isLocalPlaylist && selectedPlaylistItemIds.length > 0 && (
-                <>
-                  <button
-                    onClick={() => { void handleCreateSmartStack() }}
-                    disabled={!canCreateSmartStack}
-                    title={canCreateSmartStack ? 'Create Smart Stack' : 'Select adjacent playlist items to create a Smart Stack'}
-                    className="px-4 py-2 rounded-xl bg-emerald-400/12 border border-emerald-300/20 text-emerald-100 text-sm hover:bg-emerald-400/18 transition-colors disabled:opacity-40"
-                  >
-                    Create Smart Stack
-                  </button>
-                  <button
-                    onClick={() => {
-                      setSelectedPlaylistItemIds([])
-                      setSelectionAnchorId(null)
-                    }}
-                    className="px-4 py-2 rounded-xl bg-white/[0.04] border border-white/10 text-zinc-300 text-sm hover:bg-white/[0.08] transition-colors"
-                  >
-                    Clear Selection
-                  </button>
-                </>
-              )}
-            </div>
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
-              {isLocalPlaylist && selectedPlaylistItemIds.length > 0 && (
-                <span>{selectedPlaylistItemIds.length} selected</span>
-              )}
-              {isLocalPlaylist && (
-                <span>Cmd/Ctrl-click or Shift-click to select adjacent tracks for Smart Stacks.</span>
-              )}
-            </div>
-            <div className="mt-5 max-w-xl">
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="Search inside this playlist..."
-                className="w-full px-4 py-3 rounded-2xl bg-white/[0.04] border border-white/10 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-white/20"
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-6 py-6">
-        {isLoading ? (
-          <div className="flex items-center justify-center h-full">
-            <p className="text-sm text-zinc-500">Loading...</p>
-          </div>
-        ) : rows.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full gap-3">
-            <p className="text-sm text-zinc-500">This playlist is empty</p>
-            <p className="text-xs text-zinc-600">Drag tracks from your library</p>
-          </div>
-        ) : visibleRows.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full gap-3">
-            <p className="text-sm text-zinc-500">No matching tracks</p>
-            <p className="text-xs text-zinc-600">Try a different title, artist, or album search.</p>
-          </div>
-        ) : (
-          <div className="rounded-2xl border border-white/5 overflow-hidden">
-            <table className="w-full">
-              <thead className="bg-white/[0.03] sticky top-0">
-                <tr className="text-[11px] uppercase tracking-wider text-zinc-500">
-                  <th className="text-left px-4 py-3 font-medium w-10">#</th>
-                  <th className="text-left px-4 py-3 font-medium">Title</th>
-                  <th className="text-left px-4 py-3 font-medium hidden md:table-cell">Artist</th>
-                  <th className="text-left px-4 py-3 font-medium hidden lg:table-cell">Album</th>
-                  <th className="text-right px-4 py-3 font-medium">Time</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleRows.map(({ row, originalIndex }, visibleIndex) => {
-                  const track = rowToTrack(row)
-                  const playlistItemId = getPlaylistItemId(row)
-                  const isSelected = isLocalPlaylist && playlistItemId != null && selectedPlaylistItemIdSet.has(playlistItemId)
-                  const stackLabel = getSmartStackLabel(row)
-                  const previousStackId = originalIndex > 0 ? rows[originalIndex - 1]?.playlist_stack_id ?? null : null
-                  const nextStackId = originalIndex < rows.length - 1 ? rows[originalIndex + 1]?.playlist_stack_id ?? null : null
-                  const isStackStart = row.playlist_stack_id != null && previousStackId !== row.playlist_stack_id
-                  const isStackEnd = row.playlist_stack_id != null && nextStackId !== row.playlist_stack_id
-
-                  return (
-                    <tr
-                      key={playlistItemId ?? `${row.id}-${originalIndex}`}
-                      draggable={!playlistReadOnly}
-                      onClick={(event) => { void handlePlayTrack(event, originalIndex) }}
-                      onContextMenu={(e) => handleContextMenu(e, originalIndex)}
-                      onDragStart={(e) => handleDragStart(e, originalIndex)}
-                      onDragOver={(e) => handleDragOver(e, originalIndex)}
-                      onDrop={(e) => { void handleDrop(e, originalIndex) }}
-                      onDragEnd={handleDragEnd}
-                      className={`group border-t border-white/[0.04] cursor-pointer hover:bg-white/[0.04] transition-colors ${
-                        dragOverIndex === originalIndex && dragIndexRef.current !== originalIndex
-                          ? 'border-t-2 border-sky-400'
-                          : ''
-                      } ${
-                        isSelected ? 'bg-emerald-400/[0.08]' : ''
-                      } ${
-                        row.playlist_stack_id != null ? 'bg-sky-400/[0.03]' : ''
-                      } ${
-                        isStackStart ? 'border-t border-sky-300/25' : ''
-                      } ${
-                        isStackEnd ? 'shadow-[inset_0_-1px_0_rgba(125,211,252,0.18)]' : ''
-                      }`}
-                    >
-                      <td className="px-4 py-3 text-xs text-zinc-500 font-mono">
-                        {normalizedSearch ? originalIndex + 1 : visibleIndex + 1}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-3 min-w-0">
-                          <ArtworkThumbnail src={track.coverUrl} size={40} />
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <p className="text-sm text-zinc-100 truncate">{row.title}</p>
-                              {stackLabel && (
-                                <span className="shrink-0 rounded-full border border-sky-300/20 bg-sky-400/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-sky-200">
-                                  {stackLabel}
-                                </span>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-2 mt-0.5 min-w-0 md:hidden">
-                              <span className="text-xs text-zinc-500 truncate">{rowArtistName(row)}</span>
-                            </div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-zinc-400 truncate hidden md:table-cell">
-                        {row.catalog_artist_id ? (
-                          <button
-                            className="truncate text-zinc-400 hover:text-zinc-100 transition-colors"
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              void openCatalogArtist(row.catalog_artist_id!)
-                            }}
-                          >
-                            {rowArtistName(row)}
-                          </button>
-                        ) : (
-                          rowArtistName(row)
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-zinc-400 truncate hidden lg:table-cell">
-                        {row.catalog_album_id ? (
-                          <button
-                            className="truncate text-zinc-400 hover:text-zinc-100 transition-colors"
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              void openCatalogAlbum(row.catalog_album_id!)
-                            }}
-                          >
-                            {row.album_title || '—'}
-                          </button>
-                        ) : (
-                          row.album_title || '—'
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-zinc-500 font-mono text-right">
-                        {formatDuration(track.duration || 0)}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {contextMenu && (
-        <div
-          ref={contextMenuRef}
-          className="fixed z-50 min-w-52 py-1 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-          onClick={(e) => e.stopPropagation()}
-          onMouseEnter={clearAddToPlaylistCloseTimer}
-          onMouseLeave={scheduleAddToPlaylistClose}
-        >
-          <button
-            className="w-full text-left px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800 transition-colors"
-            onClick={handleAddTrackToQueue}
-          >
-            Add to Queue
-          </button>
-          <button
-            className="w-full flex items-center justify-between text-left px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800 transition-colors"
-            onMouseEnter={() => {
-              clearAddToPlaylistCloseTimer()
-              setIsAddToPlaylistMenuOpen(true)
-            }}
-            onClick={(e) => e.preventDefault()}
-          >
-            <span>Add to Playlist</span>
-            <span className="text-zinc-500">›</span>
-          </button>
-          {isLocalPlaylist && canCreateSmartStack && (
-            <button
-              className="w-full text-left px-4 py-2 text-sm text-emerald-300 hover:bg-zinc-800 transition-colors"
-              onClick={() => { void handleCreateSmartStack() }}
-            >
-              Create Smart Stack
-            </button>
-          )}
-          {isLocalPlaylist && rows[contextMenu.rowIndex]?.playlist_stack_id != null && (
-            <button
-              className="w-full text-left px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800 transition-colors"
-              onClick={() => { void handleRemoveFromStack() }}
-            >
-              Remove from Stack
-            </button>
-          )}
-          {isLocalPlaylist && rows[contextMenu.rowIndex]?.playlist_stack_id != null && (
-            <button
-              className="w-full text-left px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800 transition-colors"
-              onClick={() => { void handleDissolveStack() }}
-            >
-              Dissolve Stack
-            </button>
-          )}
-          {!playlistReadOnly && (
-            <button
-              className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-zinc-800 transition-colors"
-              onClick={() => { void handleRemoveTrack() }}
-            >
-              Remove from playlist
-            </button>
-          )}
-        </div>
+              ) : undefined,
+              trailing: formatTrackDuration(track.duration || 0),
+              active: row.id === currentTrackId,
+              unavailable: row.unavailable_reason ? unavailableTrackLabel(row.unavailable_reason) : null,
+            }
+          })}
+          onPlay={(visibleIndex, event) => {
+            const entry = visibleRows[visibleIndex]
+            if (entry) void handlePlayTrack(event, entry.originalIndex)
+          }}
+          onContextMenu={(visibleIndex, event) => {
+            const entry = visibleRows[visibleIndex]
+            if (entry) handleContextMenu(event, entry.originalIndex)
+          }}
+          getRowProps={(visibleIndex) => {
+            const entry = visibleRows[visibleIndex]
+            if (!entry) return {}
+            const { row, originalIndex } = entry
+            const playlistItemId = getPlaylistItemId(row)
+            const isSelected = isLocalPlaylist && playlistItemId != null && selectedPlaylistItemIdSet.has(playlistItemId)
+            const previousStackId = originalIndex > 0 ? rows[originalIndex - 1]?.playlist_stack_id ?? null : null
+            const nextStackId = originalIndex < rows.length - 1 ? rows[originalIndex + 1]?.playlist_stack_id ?? null : null
+            const isStackStart = row.playlist_stack_id != null && previousStackId !== row.playlist_stack_id
+            const isStackEnd = row.playlist_stack_id != null && nextStackId !== row.playlist_stack_id
+            return {
+              draggable: !playlistReadOnly,
+              onDragStart: (event) => handleDragStart(event, originalIndex),
+              onDragOver: (event) => handleDragOver(event, originalIndex),
+              onDrop: (event) => { void handleDrop(event, originalIndex) },
+              onDragEnd: handleDragEnd,
+              className: [
+                dragOverIndex === originalIndex && dragIndexRef.current !== originalIndex ? 'border-t-2 !border-t-accent-400' : '',
+                isSelected ? '!bg-emerald-400/[0.08]' : '',
+                row.playlist_stack_id != null ? 'bg-accent-400/[0.03]' : '',
+                isStackStart ? '!border-t-accent-300/25' : '',
+                isStackEnd ? 'shadow-[inset_0_-1px_0_color-mix(in_oklab,var(--accent)_25%,transparent)]' : '',
+              ].join(' '),
+            }
+          }}
+        />
       )}
-      {contextMenu && isAddToPlaylistMenuOpen && (
-        <div
-          className="fixed z-[60] min-w-60 max-h-80 overflow-y-auto py-1 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl"
-          style={{ left: addToPlaylistSubmenuLeft, top: addToPlaylistSubmenuTop }}
-          onClick={(e) => e.stopPropagation()}
-          onMouseEnter={clearAddToPlaylistCloseTimer}
-          onMouseLeave={scheduleAddToPlaylistClose}
-        >
-          <div className="px-4 py-2 border-b border-zinc-800">
-            <p className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">Add to Playlist</p>
-            <p className="mt-1 text-xs text-zinc-400">
-              {contextTrackCount} track{contextTrackCount === 1 ? '' : 's'}
-            </p>
-          </div>
-          <button
-            className="w-full text-left px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 transition-colors"
-            onClick={() => { void handleCreatePlaylistAndAddTracks() }}
-          >
-            Create New Playlist…
-          </button>
-          {localDestinationPlaylists.length > 0 ? (
-            localDestinationPlaylists.map((playlist) => (
-              <button
-                key={playlist.id}
-                className="w-full text-left px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800 transition-colors"
-                onClick={() => { void addRowsToPlaylist(playlist) }}
-              >
-                {playlist.name}
-              </button>
-            ))
-          ) : (
-            <p className="px-4 py-2 text-sm text-zinc-500">No other local playlists</p>
-          )}
-        </div>
-      )}
-    </div>
+    </CollectionView>
   )
 }

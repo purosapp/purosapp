@@ -17,6 +17,7 @@
 #include "DigitalVolume.h"
 #include "DoPHelpers.h"
 #include "DSPPipeline.h"
+#include "DsdDecimator.h"
 #include "Resampler.h"
 #include "DsdModulator.h"
 #include "VisualizerBuffer.h"
@@ -91,6 +92,11 @@ struct VisualizerSnapshot : VisualizerBuffer::Snapshot {
 
 // What the decode path does to the active track (for the signal-path UI).
 struct ResamplerStatus {
+    bool float64 = false;      // samples run through the 64-bit float chain
+    uint32_t sourceBits = 0;   // decoded resolution entering it, 0 when unknown
+    bool sourceFloat = false;  // the decoder hands over float (lossy codecs, float PCM)
+    uint32_t outputBits = 0;   // integer grid leaving it, 0 for plain float32
+    bool outputFloat = false;
     bool resampling = false;
     std::string engine;        // "fir" | "soxr" | "apple" | "" when the rate is untouched
     double inputRate = 0;
@@ -100,6 +106,7 @@ struct ResamplerStatus {
     std::string filter;        // "1x" | "nx" — which SoX filter the source rate selected
     bool deemphasis = false;
     double headroomDb = 0;
+    bool headroomAuto = false;
     double peakDb = -200;      // highest level before requantization (dBFS)
     uint64_t clippedSamples = 0;
     size_t firTaps = 0;
@@ -108,6 +115,34 @@ struct ResamplerStatus {
     uint32_t dsdOutputRate = 0;        // PCM → DSD rate, 0 when not modulating
     std::string modulator;             // "sdm5" | "sdm7" | "sdm7ec"
     uint64_t modulatorOverloads = 0;
+    uint32_t dsdSourceRate = 0;        // DSD → PCM: the DSD rate decoded (to inputRate), 0 for PCM sources
+    unsigned dsdStages = 0;
+    double dsdFilterHz = 0;            // ultrasonic low-pass, 0 = none
+    double dsdGainDb = 0;
+};
+
+// DSD → PCM in the engine. `sampleRate` 0 = not requested (a DSD file then plays as
+// DoP in exclusive mode); otherwise the PCM rate wanted, rounded to DsdDecimator::decodeRate().
+struct DsdPcmOptions {
+    uint32_t sampleRate = 0;
+    double filterHz = 0;
+    double gainDb = 0;
+};
+
+// Puros Restore for the playing stream (UI status).
+struct RestoreEngineStatus {
+    std::string mode = "off";        // "off" | "manual" | "auto"
+    std::string state = "off";       // "off" | "idle" | "active" | "bypassed"
+    std::string reason;              // why it is in that state
+    std::string sourceClass = "unknown";  // "lossy" | "lossless" | "dsd" | "unknown"
+    std::string codec;               // from the decoder, e.g. "AAC", "FLAC"
+    std::string position = "source"; // "source" | "afterDsp"
+    double cutoffHz = 0;
+    double confidence = 0;
+    double severity = 0;
+    double mix = 0;
+    double latencyMs = 0;
+    double sampleRate = 0;
 };
 
 struct ProcessingStats {
@@ -121,6 +156,7 @@ enum class TrackSourceKind {
     None,
     ExtAudioFile,
     DsdDoP,
+    DsdPcm,      // DSD decoded to PCM by the engine (DsdDecimator) into the float pipeline
     ManualPcm,
 };
 
@@ -164,11 +200,16 @@ struct TrackSlot {
     TrackSourceKind sourceKind = TrackSourceKind::None;
     DsdPlaybackState dsd;
     bool bypassDsp = false;
+    // Puros Restore: what the decoder says this source is.
+    RestoreSourceClass restoreSource = RestoreSourceClass::Unknown;
+    std::string restoreCodec;
 
-    // Resampling / requantization path: the file is decoded to float32 at
-    // `decodeRate`, optionally resampled by SoX, run through DSP, then quantized
-    // (with dither) to renderFormat. Off for bit-perfect playback.
+    // Processing path: the file is decoded to float64 at `decodeRate`, optionally
+    // resampled, run through DSP, then quantized (with dither) to renderFormat.
+    // Off for bit-perfect playback.
     bool floatPipeline = false;
+    uint32_t sourceBits = 0;
+    bool sourceFloat = false;
     double decodeRate = 0;
     ResamplerEngine srcEngine = ResamplerEngine::Soxr;
     bool rateConverted = false;
@@ -180,6 +221,7 @@ struct TrackSlot {
     DeemphasisFilter deemphasisFilter;
     double headroomGain = 1.0;
     double headroomDb = 0.0;
+    bool headroomAuto = false;
     std::unique_ptr<FirResampler> firResampler;
     std::unique_ptr<FftConvolver> roomConvolver;
     size_t convolutionTaps = 0;
@@ -188,6 +230,9 @@ struct TrackSlot {
     size_t convolutionInputFrames = 0;
     std::vector<double> convolutionScratch;
     std::string convolutionError;
+
+    // DSD → PCM source (sourceKind DsdPcm): reads slot.dsd, feeds the float pipeline.
+    std::unique_ptr<DsdDecimator> dsdDecimator;
 
     // PCM → DSD: the encoder replaces the quantizer; renderFormat is the DoP carrier.
     std::unique_ptr<DsdEncoder> dsdEncoder;
@@ -214,11 +259,14 @@ public:
     // reopening the device at the source rate.
     // `deemphasis`: the source carries CD pre-emphasis (50/15 µs) to undo.
     // `dsdOutputRate` > 0: modulate the PCM source to DSD at that rate and send it as DoP.
+    // `sourceHint`: the caller's codec metadata, used by Puros Restore only where the
+    // decoder cannot tell (a PCM container holding a lossy or DSD decode).
+    // `dsdPcm`: decode a DSD file to PCM instead of sending it as DoP (always in shared mode).
     bool playFile(const std::string& filePath, bool allowResample, bool deemphasis, uint32_t dsdOutputRate,
-                  std::string& error);
+                  RestoreSourceClass sourceHint, const DsdPcmOptions& dsdPcm, std::string& error);
     bool startPcmStream(std::string& error);
     bool queueNextFile(const std::string& filePath, bool allowResample, bool deemphasis, uint32_t dsdOutputRate,
-                       std::string& error);
+                       RestoreSourceClass sourceHint, const DsdPcmOptions& dsdPcm, std::string& error);
     void clearQueuedFile();
     void stopPlayback();
     void pause();
@@ -274,6 +322,13 @@ public:
     bool getEQEnabled() const;
     void clearEQProfile();
 
+    // Puros Restore. Applies to the playing stream immediately (crossfaded) and to every
+    // track prepared after it; Auto engages only for sources the decoder confirms lossy.
+    void setRestoreConfig(const RestoreConfig& config);
+    RestoreEngineStatus getRestoreStatus() const;
+    // Live PCM stream: the codec the stream decoder (ffmpeg) reported.
+    void setPcmStreamSourceClass(RestoreSourceClass sourceClass, const std::string& codec);
+
     void close();
 
 private:
@@ -319,7 +374,8 @@ private:
 
     // File decode thread
     bool prepareTrackSlot(int slotIndex, const std::string& filePath, std::string& error,
-                          bool allowDeviceReopen, bool allowResample, bool deemphasis, uint32_t dsdOutputRate);
+                          bool allowDeviceReopen, bool allowResample, bool deemphasis, uint32_t dsdOutputRate,
+                          RestoreSourceClass sourceHint, const DsdPcmOptions& dsdPcm);
     bool prepareDopOutput(int slotIndex, uint32_t dsdRate, bool allowDeviceReopen,
                           AudioStreamBasicDescription& dopFormatOut, std::string& error);
     bool configureDecodePipeline(TrackSlot& slot, const AudioStreamBasicDescription& sourceFormat,

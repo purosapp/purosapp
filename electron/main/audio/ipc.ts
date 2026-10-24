@@ -3,10 +3,12 @@ import {
   ipcMain,
   type BrowserWindow,
 } from 'electron'
-import { prepareLocalPlaybackFile, sanitizeDsdConversionOptions } from './localPlayback'
+import { prepareLocalPlaybackFile, resolveDsdPcmTarget, sanitizeDsdConversionOptions } from './localPlayback'
 import type { NativeFirDesign, NativeResamplerConfig } from './engine'
+import { isRestoreSourceHint, isValidNativeRestoreConfig } from '../../../src/services/restoreSettings'
 import { detectPreEmphasis } from './emphasis'
 import { listInstalledAudioPlugins } from './pluginDiscovery'
+import { cancelAllWaveforms, cancelWaveform, finishWaveformSource, startWaveform } from './waveform'
 import {
   buildAutoEQIndex,
   clearAudioEqProfile,
@@ -21,6 +23,7 @@ import {
   getAudioMode,
   getAudioPosition,
   getAudioProcessingStats,
+  getAudioRestoreStatus,
   getAudioVisualizerFrame,
   getCurrentAudioFormat,
   isAudioTrackEnded,
@@ -49,6 +52,7 @@ import {
   setAudioHardwareMute,
   setAudioHardwareBufferOptions,
   setAudioResamplerConfig,
+  setAudioRestoreConfig,
   getAudioResamplerStatus,
   inspectAudioImpulseResponse,
   previewAudioFirFilter,
@@ -86,6 +90,7 @@ function isValidResamplerConfig(config: NativeResamplerConfig): boolean {
     isValidSoxrFilter(config.filter1x) && isValidSoxrFilter(config.filterNx) &&
     isValidFirDesign(config.fir1x) && isValidFirDesign(config.firNx) && isValidConvolution(config.convolution) &&
     Number.isFinite(config.appleQuality) && Number.isFinite(config.headroomDb) &&
+    typeof config.headroomAuto === 'boolean' &&
     ['linear', 'normal', 'mastering'].includes(config.appleComplexity) &&
     ['none', 'tpdf', 'gauss', 'shaped', 'shaped5', 'shaped9'].includes(config.dither) &&
     ['sdm5', 'sdm7', 'sdm7ec'].includes(config.modulator)
@@ -126,11 +131,13 @@ export function registerAudioIpc(deps: AudioIpcDeps): void {
     allowResample = false,
     deemphasis = false,
     dsdOutputRate = 0,
-  ) => playAudioFile(filePath, allowResample === true, deemphasis === true, validDsdOutputRate(dsdOutputRate)))
+    sourceHint: unknown = 'unknown',
+  ) => playAudioFile(filePath, allowResample === true, deemphasis === true, validDsdOutputRate(dsdOutputRate),
+    isRestoreSourceHint(sourceHint) ? sourceHint : 'unknown'))
   ipcMain.handle('audio:prepare-local-file', async (
     _event,
     filePath: string,
-    sourceFormat?: { sampleRate?: number; channels?: number; isDsd?: boolean } | null,
+    sourceFormat?: { sampleRate?: number; dsdRate?: number; channels?: number; isDsd?: boolean } | null,
     dsdOptions?: unknown,
   ) => prepareLocalPlaybackFile(filePath, sourceFormat ?? null, sanitizeDsdConversionOptions(dsdOptions)))
   ipcMain.handle('audio:queue-next-file', (
@@ -139,7 +146,9 @@ export function registerAudioIpc(deps: AudioIpcDeps): void {
     allowResample = false,
     deemphasis = false,
     dsdOutputRate = 0,
-  ) => queueNextAudioFile(filePath, allowResample === true, deemphasis === true, validDsdOutputRate(dsdOutputRate)))
+    sourceHint: unknown = 'unknown',
+  ) => queueNextAudioFile(filePath, allowResample === true, deemphasis === true, validDsdOutputRate(dsdOutputRate),
+    isRestoreSourceHint(sourceHint) ? sourceHint : 'unknown'))
   ipcMain.handle('audio:set-resampler-config', (_event, config: NativeResamplerConfig) => {
     if (!isValidResamplerConfig(config)) throw new Error('Invalid resampler config')
     setAudioResamplerConfig(config)
@@ -192,6 +201,15 @@ export function registerAudioIpc(deps: AudioIpcDeps): void {
   ipcMain.handle('audio:get-current-format', () => getCurrentAudioFormat())
   ipcMain.handle('audio:get-processing-stats', () => getAudioProcessingStats())
   ipcMain.handle('audio:get-visualizer-frame', () => getAudioVisualizerFrame())
+  ipcMain.handle('waveform:start', (event, requestId: unknown, request: unknown) => {
+    // ffmpeg reads the DSD file itself, not the engine's DSD → PCM target.
+    const target = request && typeof request === 'object' ? (request as { path?: unknown }).path : null
+    const dsdPcm = typeof target === 'string' ? resolveDsdPcmTarget(target) : null
+    return startWaveform(event.sender, requestId, dsdPcm ? { ...request as object, path: dsdPcm.sourcePath } : request)
+  })
+  ipcMain.handle('waveform:finish-source', (_event, requestId: unknown) => finishWaveformSource(requestId))
+  ipcMain.handle('waveform:cancel', (_event, requestId: unknown) => cancelWaveform(requestId))
+  deps.win?.on('closed', cancelAllWaveforms)
   ipcMain.handle('audio:set-volume', (_event, gain: number) => setAudioVolume(gain))
   ipcMain.handle('audio:set-digital-volume', (_event, gain: number) => {
     if (typeof gain !== 'number' || !Number.isFinite(gain)) throw new Error('Invalid volume')
@@ -237,6 +255,11 @@ export function registerAudioIpc(deps: AudioIpcDeps): void {
     setAudioEqEnabled(enabled))
   ipcMain.handle('dsp:get-eq-enabled', () => getAudioEqEnabled())
   ipcMain.handle('dsp:clear-eq-profile', () => clearAudioEqProfile())
+  ipcMain.handle('dsp:set-restore-config', (_event, config: unknown) => {
+    if (!isValidNativeRestoreConfig(config)) throw new Error('Invalid restore config')
+    setAudioRestoreConfig(config)
+  })
+  ipcMain.handle('dsp:get-restore-status', () => getAudioRestoreStatus())
   ipcMain.handle('dsp:list-installed-plugins', (_event, refresh = false) =>
     listInstalledAudioPlugins(refresh === true))
   ipcMain.handle('dsp:add-installed-plugin', async (_event, filePath: string) => {

@@ -58,8 +58,10 @@ struct ResamplerConfig {
     DitherMode dither = DitherMode::Tpdf;
 
     // Attenuation applied whenever the float path runs, so inter-sample peaks
-    // reconstructed by the resampler do not clip.
+    // reconstructed by the resampler do not clip. Auto picks it per track and
+    // ignores headroomDb.
     double headroomDb = 0.0;
+    bool headroomAuto = false;
 
     // FIR designs for 1x and hi-res sources (engine Fir, integer ratios).
     FirDesign fir1x;
@@ -252,6 +254,9 @@ public:
 
     bool ditherActive() const { return ditherActive_; }
     uint32_t ditherBits() const { return ditherActive_ ? gridBits_ : 0; }
+    // Resolution the samples land on: integer grid bits, or 0 for plain float32.
+    uint32_t gridBits() const { return gridBits_; }
+    bool isFloat() const { return isFloat_; }
     DitherMode mode() const { return mode_; }
 
     // Peak |sample| and clipped-sample count since the last take (decode thread).

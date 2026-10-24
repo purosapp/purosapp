@@ -20,8 +20,6 @@ interface AppShellState {
   canGoBack: boolean
   future: AppShellHistorySnapshot[]
   canGoForward: boolean
-  sidebarCollapsed: boolean
-  setSidebarCollapsed: (collapsed: boolean) => void
   setActiveView: (view: AppShellView) => void
   openPlaylist: (playlistId: number) => void
   openProviderCollection: (collection: HomeProviderCollectionItem) => void
@@ -58,8 +56,6 @@ export const useAppShellStore = create<AppShellState>((set, get) => ({
   canGoBack: false,
   future: [],
   canGoForward: false,
-  sidebarCollapsed: false,
-  setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
 
   setActiveView: (view) => {
     const state = get()

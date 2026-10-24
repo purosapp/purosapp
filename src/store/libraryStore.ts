@@ -82,6 +82,7 @@ export function trackRowToTrack(row: TrackRow): Track {
     startOffsetMs: row.start_offset_ms ?? 0,
     endOffsetMs: row.end_offset_ms ?? null,
     cueSheetPath: row.cue_sheet_path ?? null,
+    unavailableReason: row.unavailable_reason ?? null,
   }
 }
 

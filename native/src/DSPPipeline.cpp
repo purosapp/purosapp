@@ -75,6 +75,15 @@ void DSPPipeline::process(uint8_t* buffer, uint32_t numFrames,
     processSamples(buffer, numFrames, numChannels, bytesPerSample, isFloat, true);
 }
 
+bool DSPPipeline::isProcessing() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const bool eq = enabled_.load(std::memory_order_relaxed) &&
+                    (!profileBands_.empty() || crossfeedConfig_.enabled);
+    const bool plugins = std::any_of(pluginSpecs_.begin(), pluginSpecs_.end(),
+                                     [](const PluginSpec& spec) { return spec.enabled; });
+    return eq || plugins;
+}
+
 void DSPPipeline::processFloat(float* buffer, uint32_t numFrames, uint32_t numChannels) {
     // Overs are left for the quantizer, which clips and counts them.
     processSamples(reinterpret_cast<uint8_t*>(buffer), numFrames, numChannels, 4, true, false);
@@ -86,11 +95,32 @@ void DSPPipeline::processDouble(double* buffer, uint32_t numFrames, uint32_t num
 
 void DSPPipeline::processSamples(uint8_t* buffer, uint32_t numFrames, uint32_t numChannels,
                                  uint32_t bytesPerSample, bool isFloat, bool clampFloat) {
-    const bool eqEnabled = enabled_.load(std::memory_order_relaxed);
-
     std::lock_guard<std::mutex> lock(mutex_);
+    processChainLocked(buffer, numFrames, numChannels, bytesPerSample, isFloat, clampFloat, true);
+}
+
+void DSPPipeline::processChainLocked(uint8_t* buffer, uint32_t numFrames, uint32_t numChannels,
+                                     uint32_t bytesPerSample, bool isFloat, bool clampFloat, bool restore) {
+    const bool eqEnabled = enabled_.load(std::memory_order_relaxed);
+    const bool restoreHere = restore && !restoreExternal_ && restoreInChain_ && restore_ &&
+                             numChannels == restoreChannels_;
+    if (restore && numFrames > 0) restoreStreamStarted_ = true;
+    if (restoreHere && restoreStagePosition_ == RestorePosition::Source) {
+        runRestoreInPlaceLocked(buffer, numFrames, numChannels, bytesPerSample, isFloat, clampFloat);
+    }
+
     const bool processEq = eqEnabled && !channels_.empty();
-    if (!processEq && !plugins_.active()) return;
+    if (processEq || plugins_.active()) processEqAndPluginsLocked(buffer, numFrames, numChannels, bytesPerSample,
+                                                                  isFloat, clampFloat, processEq);
+
+    if (restoreHere && restoreStagePosition_ == RestorePosition::AfterDsp) {
+        runRestoreInPlaceLocked(buffer, numFrames, numChannels, bytesPerSample, isFloat, clampFloat);
+    }
+}
+
+void DSPPipeline::processEqAndPluginsLocked(uint8_t* buffer, uint32_t numFrames, uint32_t numChannels,
+                                            uint32_t bytesPerSample, bool isFloat, bool clampFloat,
+                                            bool processEq) {
     uint32_t stride = bytesPerSample * numChannels;
 
     if (processEq) for (uint32_t i = 0; i < numFrames; i++) {
@@ -347,6 +377,10 @@ void DSPPipeline::resetState() {
     for (auto& ch : channels_)
         for (auto& f : ch) f.reset();
     plugins_.reset();
+    // Seek / restart: the stage starts over on the same source, keeping what it learned.
+    restoreInChain_ = false;
+    restoreStreamStarted_ = false;
+    updateRestoreLocked();
 }
 
 bool DSPPipeline::setPlugins(const std::vector<PluginSpec>& specs, std::string& error) {
@@ -398,9 +432,11 @@ void DSPPipeline::copyConfigTo(DSPPipeline& other) const {
     bool isFloat = false;
     bool enabled = false;
     std::vector<PluginSpec> plugins;
+    RestoreConfig restoreConfig;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        restoreConfig = restoreConfig_;
         bands = profileBands_;
         crossfeedConfig = crossfeedConfig_;
         preampGainDb = preampGainDb_;
@@ -418,5 +454,226 @@ void DSPPipeline::copyConfigTo(DSPPipeline& other) const {
     other.setCrossfeed(crossfeedConfig);
     other.setEnabled(enabled);
     other.setPlugins(plugins, error);
+    {
+        // The stage itself is set up per stream by prepareRestoreStage().
+        std::lock_guard<std::mutex> lock(other.mutex_);
+        other.restoreConfig_ = restoreConfig;
+    }
     other.resetState();
+}
+
+// ---------------------------------------------------------------------------
+// Puros Restore
+// ---------------------------------------------------------------------------
+
+void DSPPipeline::setRestoreConfig(const RestoreConfig& config) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    restoreConfig_ = config;
+    updateRestoreLocked();
+}
+
+RestoreConfig DSPPipeline::restoreConfig() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return restoreConfig_;
+}
+
+bool DSPPipeline::restoreWouldEngage(RestoreSourceClass source) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return restoreEngagesFor(restoreConfig_, source);
+}
+
+void DSPPipeline::prepareRestoreStage(bool external, RestorePosition position, double sampleRate,
+                                      uint32_t channels, RestoreSourceClass source) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    restoreExternal_ = external;
+    restoreStagePosition_ = position;
+    restoreRate_ = sampleRate;
+    restoreChannels_ = channels <= RestoreProcessor::kMaxChannels ? channels : 0;
+    restoreSource_ = source;
+    restoreInChain_ = false;
+    restoreStreamStarted_ = false;
+    // A new track learns its own cutoff (or is seeded by its gapless predecessor).
+    if (restore_) restore_->reset(RestoreProcessor::Start::Delay, false);
+    updateRestoreLocked();
+}
+
+void DSPPipeline::setRestoreSource(RestoreSourceClass source) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    restoreSource_ = source;
+    updateRestoreLocked();
+}
+
+// Decides whether the stage runs on this stream. Never called from a processing
+// path: entering the chain may allocate (configure), which only the control side does.
+void DSPPipeline::updateRestoreLocked() {
+    if (configOnly_) return;
+    const bool want = restoreRate_ > 0 && restoreChannels_ > 0 && restoreEngagesFor(restoreConfig_, restoreSource_);
+    if (restore_) restore_->setConfig(restoreConfig_);
+    if (restoreInChain_) {
+        // Already running: crossfade in or out. The latency stays until the stream restarts,
+        // so switching never shifts the timeline.
+        restore_->setEngaged(want, false);
+        return;
+    }
+    if (!want) return;
+    if (!restore_) restore_ = std::make_unique<RestoreProcessor>();
+    if (!restore_->configure(restoreRate_, restoreChannels_)) {
+        std::fprintf(stderr, "[Puros] Restore unavailable at %.0f Hz / %u ch\n", restoreRate_, restoreChannels_);
+        return;
+    }
+    restore_->setConfig(restoreConfig_);
+    restoreScratch_.assign(std::max<size_t>(4096, restore_->latency()) * restoreChannels_, 0.0);
+    // The float pipeline can drop the priming frames, so it stays sample-aligned. In place,
+    // a fresh stream simply starts delayed; one already playing crossfades into the delay.
+    const RestoreProcessor::Start start = restoreExternal_ ? RestoreProcessor::Start::Trim
+        : restoreStreamStarted_ ? RestoreProcessor::Start::Join
+        : RestoreProcessor::Start::Delay;
+    restore_->reset(start, true);
+    restore_->setEngaged(true, !restoreStreamStarted_);
+    restoreInChain_ = true;
+}
+
+void DSPPipeline::runRestoreStage(RestorePosition position, std::vector<double>& pcm, uint32_t channels, bool atEnd) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const size_t frames = channels > 0 ? pcm.size() / channels : 0;
+    if (!restoreExternal_ || position != restoreStagePosition_ || !restoreInChain_ || !restore_ ||
+        channels != restoreChannels_) {
+        if (frames > 0) restoreStreamStarted_ = true;
+        return;
+    }
+    if (frames > 0) restoreStreamStarted_ = true;
+    size_t produced = restore_->process(pcm.data(), frames);
+    if (atEnd) {
+        const size_t tail = restore_->pendingTail();
+        pcm.resize((produced + tail) * channels);
+        produced += restore_->flush(pcm.data() + produced * channels, tail);
+    }
+    pcm.resize(produced * channels);
+}
+
+namespace {
+
+// Exact integer ↔ double for the in-place Restore stage: a bypassed stage hands
+// back the identical integers.
+inline double restoreRead(const uint8_t* ptr, uint32_t bytesPerSample, bool isFloat) {
+    if (isFloat) {
+        float f;
+        std::memcpy(&f, ptr, 4);
+        return f;
+    }
+    switch (bytesPerSample) {
+        case 2: {
+            int16_t v;
+            std::memcpy(&v, ptr, 2);
+            return v / 32768.0;
+        }
+        case 3: {
+            int32_t v = ptr[0] | (ptr[1] << 8) | (ptr[2] << 16);
+            if (v & 0x800000) v |= static_cast<int32_t>(0xFF000000u);
+            return v / 8388608.0;
+        }
+        case 4: {
+            int32_t v;
+            std::memcpy(&v, ptr, 4);
+            return v / 2147483648.0;
+        }
+        default:
+            return 0.0;
+    }
+}
+
+inline void restoreWrite(uint8_t* ptr, double v, uint32_t bytesPerSample, bool isFloat, bool clampFloat) {
+    if (isFloat) {
+        const float f = static_cast<float>(clampFloat ? std::clamp(v, -1.0, 1.0) : v);
+        std::memcpy(ptr, &f, 4);
+        return;
+    }
+    switch (bytesPerSample) {
+        case 2: {
+            const auto s = static_cast<int16_t>(std::clamp(std::lrint(v * 32768.0), -32768L, 32767L));
+            std::memcpy(ptr, &s, 2);
+            break;
+        }
+        case 3: {
+            const auto s = static_cast<int32_t>(std::clamp(std::lrint(v * 8388608.0), -8388608L, 8388607L));
+            ptr[0] = static_cast<uint8_t>(s & 0xFF);
+            ptr[1] = static_cast<uint8_t>((s >> 8) & 0xFF);
+            ptr[2] = static_cast<uint8_t>((s >> 16) & 0xFF);
+            break;
+        }
+        case 4: {
+            const auto s = static_cast<int32_t>(std::clamp(std::llrint(v * 2147483648.0), -2147483648LL, 2147483647LL));
+            std::memcpy(ptr, &s, 4);
+            break;
+        }
+    }
+}
+
+}  // namespace
+
+void DSPPipeline::runRestoreInPlaceLocked(uint8_t* buffer, uint32_t numFrames, uint32_t numChannels,
+                                          uint32_t bytesPerSample, bool isFloat, bool clampFloat) {
+    if (isFloat && bytesPerSample == 8) {
+        restore_->process(reinterpret_cast<double*>(buffer), numFrames);
+        return;
+    }
+    if (bytesPerSample < 2 || bytesPerSample > 4 || (isFloat && bytesPerSample != 4)) return;
+    const size_t chunk = restoreScratch_.size() / numChannels;
+    for (uint32_t offset = 0; offset < numFrames;) {
+        const uint32_t count = static_cast<uint32_t>(std::min<size_t>(chunk, numFrames - offset));
+        uint8_t* base = buffer + static_cast<size_t>(offset) * numChannels * bytesPerSample;
+        const size_t samples = static_cast<size_t>(count) * numChannels;
+        for (size_t i = 0; i < samples; ++i) restoreScratch_[i] = restoreRead(base + i * bytesPerSample, bytesPerSample, isFloat);
+        // Delay / Join keep the block length.
+        restore_->process(restoreScratch_.data(), count);
+        for (size_t i = 0; i < samples; ++i) {
+            restoreWrite(base + i * bytesPerSample, restoreScratch_[i], bytesPerSample, isFloat, clampFloat);
+        }
+        offset += count;
+    }
+}
+
+uint32_t DSPPipeline::drainRestore(uint8_t* buffer, uint32_t maxFrames, uint32_t numChannels, uint32_t bytesPerSample) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (restoreExternal_ || !restoreInChain_ || !restore_ || numChannels != restoreChannels_ || maxFrames == 0) return 0;
+    if (bytesPerSample < 2 || bytesPerSample > 4 || (isFloat_ && bytesPerSample != 4)) return 0;
+    const size_t capacity = std::min<size_t>(maxFrames, restoreScratch_.size() / numChannels);
+    const auto frames = static_cast<uint32_t>(restore_->flush(restoreScratch_.data(), std::min(capacity, restore_->pendingTail())));
+    for (size_t i = 0; i < static_cast<size_t>(frames) * numChannels; ++i) {
+        restoreWrite(buffer + i * bytesPerSample, restoreScratch_[i], bytesPerSample, isFloat_, true);
+    }
+    // A stage before EQ still owes its tail the rest of the chain.
+    if (frames > 0 && restoreStagePosition_ == RestorePosition::Source) {
+        processChainLocked(buffer, frames, numChannels, bytesPerSample, isFloat_, true, false);
+    }
+    return frames;
+}
+
+RestoreStatus DSPPipeline::restoreStatus() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    RestoreStatus status;
+    status.config = restoreConfig_;
+    status.source = restoreSource_;
+    status.position = restoreStagePosition_;
+    status.sampleRate = restoreRate_;
+    status.inChain = restoreInChain_ && restore_;
+    if (status.inChain) {
+        status.engaged = restore_->engaged();
+        status.mix = restore_->mix();
+        status.latencySeconds = restore_->sampleRate() > 0 ? restore_->latency() / restore_->sampleRate() : 0.0;
+        status.analysis = restore_->analysis();
+    }
+    return status;
+}
+
+void DSPPipeline::seedRestoreFrom(const DSPPipeline& previous) {
+    if (&previous == this) return;
+    RestoreAnalysis analysis;
+    {
+        std::lock_guard<std::mutex> lock(previous.mutex_);
+        if (!previous.restoreInChain_ || !previous.restore_) return;
+        analysis = previous.restore_->analysis();
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (restoreInChain_ && restore_) restore_->seedAnalysis(analysis);
 }

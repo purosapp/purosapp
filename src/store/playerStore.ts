@@ -67,6 +67,12 @@ export interface Track {
    * track, so playing one song from a playlist doesn't resolve the whole queue.
    */
   unresolved?: boolean
+  /**
+   * Set when the account cannot stream the track (a provider reason such as
+   * `region`). Such entries never enter a queue and are skipped if playback
+   * finds out after they were queued.
+   */
+  unavailableReason?: string | null
 }
 
 export interface RestoredPlayerSession {
@@ -109,6 +115,8 @@ interface PlayerState {
   // Transient info notification (auto-clears, not an error)
   notification: string | null
   bufferProgress: number | null
+  /** The file the engine opened for the current track; drives the seek-bar waveform. */
+  playbackSource: PlaybackSource | null
 
   // Playback state
   isPlaying: boolean
@@ -164,11 +172,27 @@ interface PlayerState {
   setDeviceCapabilities: (caps: DeviceCapabilities | null) => void
   setCurrentTrackArtwork: (url: string | null) => void
   hydrateQueueTrack: (target: Track, data: Partial<Track>) => void
+  /** Greys out every queue entry for this track's source so the queue skips it. */
+  markTrackUnavailable: (target: Track, reason: string) => void
   setBluetoothInfo: (info: BluetoothInfo | null) => void
   setProcessingSpeed: (speed: number | null) => void
   setResolvedDeviceName: (name: string | null) => void
   setNotification: (msg: string | null) => void
   setBufferProgress: (progress: number | null) => void
+  setPlaybackSource: (source: PlaybackSource | null) => void
+  /** The current track's growing file has been fully written (and possibly moved to `path`). */
+  markPlaybackSourceComplete: (trackIdentity: string, path: string) => void
+}
+
+export interface PlaybackSource {
+  /** getTrackIdentity() of the track playing from this file. */
+  trackIdentity: string
+  path: string
+  /** Still being written by a provider's progressive download. */
+  growing: boolean
+  /** A CUE track's slice of the file. */
+  startSeconds: number
+  durationSeconds: number | null
 }
 
 let notificationTimer: ReturnType<typeof setTimeout> | null = null
@@ -262,6 +286,24 @@ function shuffleTrackUnits(tracks: Track[]): Track[] {
   return fisherYatesShuffle(buildPlaybackUnits(tracks)).flat()
 }
 
+/**
+ * The nearest entry after (`step` 1) or before (-1) `from` that is not marked
+ * unavailable, wrapping past the end when `wrap` is set; -1 when there is none.
+ */
+export function findPlayableIndex(tracks: Track[], from: number, step: 1 | -1, wrap: boolean): number {
+  for (let offset = 1; offset <= tracks.length; offset += 1) {
+    let index = from + step * offset
+    if (index < 0 || index >= tracks.length) {
+      if (!wrap) return -1
+      index = ((index % tracks.length) + tracks.length) % tracks.length
+    }
+    // A full wrap lands back on `from`: repeat-all replays a lone playable track.
+    if (!tracks[index]?.unavailableReason) return index
+    if (index === from) return -1
+  }
+  return -1
+}
+
 function findTrackIndex(tracks: Track[], target: Track | null | undefined): number {
   if (!target) return -1
   return tracks.findIndex((track) => tracksShareIdentity(track, target))
@@ -315,6 +357,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   resolvedDeviceName: null,
   notification: null,
   bufferProgress: null,
+  playbackSource: null,
 
   isPlaying: false,
   position: 0,
@@ -353,11 +396,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     const activeQueue = shuffle ? shuffledQueue : queue
     if (activeQueue.length === 0) return
 
-    let nextIndex = queueIndex + 1
-    if (nextIndex >= activeQueue.length) {
-      if (repeat === 'all') nextIndex = 0
-      else return
-    }
+    const nextIndex = findPlayableIndex(activeQueue, queueIndex, 1, repeat === 'all')
+    if (nextIndex < 0) return
 
     set({
       queueIndex: nextIndex,
@@ -381,7 +421,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       return
     }
 
-    const prevIndex = Math.max(0, queueIndex - 1)
+    // With nothing playable before it, restart the current entry as before.
+    const earlier = findPlayableIndex(activeQueue, queueIndex, -1, false)
+    const prevIndex = earlier >= 0 ? earlier : Math.max(0, queueIndex)
     set({
       queueIndex: prevIndex,
       currentTrack: activeQueue[prevIndex],
@@ -396,7 +438,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   setQueue: (tracks, startIndex = 0, playbackContext) => {
     const shuffleEnabled = get().shuffle
-    const queueTracks = withPlaybackContext(tracks, playbackContext)
+    // Unavailable tracks never enter a queue; start from the requested track,
+    // or the first playable one after it.
+    const requested = tracks.findIndex((track, index) => index >= startIndex && !track.unavailableReason)
+    const playable = tracks.filter((track) => !track.unavailableReason)
+    startIndex = requested < 0 ? 0 : tracks.slice(0, requested).filter((track) => !track.unavailableReason).length
+    const queueTracks = withPlaybackContext(playable, playbackContext)
     const requestedStartTrack = queueTracks[startIndex] ?? queueTracks[0] ?? null
     const shuffled = requestedStartTrack
       ? buildPinnedShuffleQueue(queueTracks, requestedStartTrack)
@@ -442,6 +489,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   }),
 
   appendRadioQueue: (tracks, artistName, artistId = null) => set((s) => {
+    tracks = tracks.filter((track) => !track.unavailableReason)
     if (tracks.length === 0 || s.queue.length !== s.queuePrimaryLength) return {}
     const radioContext: PlaybackContext = {
       kind: 'artist-radio',
@@ -457,6 +505,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   }),
 
   addToQueue: (track) => set((s) => {
+    if (track.unavailableReason) return {}
     const queueInsertIndex = Math.max(0, Math.min(s.queuePrimaryLength, s.queue.length))
     const shuffledInsertIndex = Math.max(0, Math.min(s.shuffledQueue.length - (s.queue.length - s.queuePrimaryLength), s.shuffledQueue.length))
     const nextQueue = [...s.queue]
@@ -616,6 +665,17 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       currentTrack: s.currentTrack === target ? apply(s.currentTrack) : s.currentTrack,
     }
   }),
+  markTrackUnavailable: (target, reason) => set((s) => {
+    const sameSource = (track: Track) => track === target || (
+      !!target.sourceId && track.sourceId === target.sourceId && (track.provider ?? track.sourceType) === (target.provider ?? target.sourceType)
+    )
+    const apply = (track: Track): Track => (sameSource(track) ? { ...track, unavailableReason: reason } : track)
+    return {
+      queue: s.queue.map(apply),
+      shuffledQueue: s.shuffledQueue.map(apply),
+      currentTrack: s.currentTrack && sameSource(s.currentTrack) ? apply(s.currentTrack) : s.currentTrack,
+    }
+  }),
   setBluetoothInfo: (info) => set({ bluetoothInfo: info }),
   setProcessingSpeed: (speed) => set({ processingSpeed: speed }),
   setResolvedDeviceName: (name) => set({ resolvedDeviceName: name }),
@@ -630,4 +690,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
   },
   setBufferProgress: (progress) => set({ bufferProgress: progress }),
+  setPlaybackSource: (source) => set({ playbackSource: source }),
+  markPlaybackSourceComplete: (trackIdentity, path) => {
+    const source = get().playbackSource
+    if (source?.growing && source.trackIdentity === trackIdentity) {
+      set({ playbackSource: { ...source, path, growing: false } })
+    }
+  },
 }))

@@ -1,7 +1,8 @@
-import { app, BrowserWindow, Menu, nativeImage } from 'electron'
+import { app, BrowserWindow, Menu, nativeImage, nativeTheme } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import liquidGlass from 'electron-liquid-glass'
 import {
   RENDERER_DIST,
   VITE_DEV_SERVER_URL,
@@ -11,6 +12,7 @@ import {
   setMainWindow,
 } from './rendererBridge'
 import { flushPendingLastFmAuthToken } from './lastfm'
+import { trackWindowActivity } from './windowActivity'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -57,6 +59,7 @@ export function openVisualizerWindow(): void {
   })
 
   visualizerWindow = vizWin
+  trackWindowActivity(vizWin)
 
   if (VITE_DEV_SERVER_URL) {
     void vizWin.loadURL(VITE_DEV_SERVER_URL + '?visualizer=1')
@@ -69,6 +72,10 @@ export function openVisualizerWindow(): void {
     visualizerWindow = null
     getMainWindow()?.webContents.send('visualizer:attached')
   })
+}
+
+export function closeVisualizerWindow(): void {
+  if (visualizerWindow && !visualizerWindow.isDestroyed()) visualizerWindow.close()
 }
 
 export function buildAppMenu(): void {
@@ -101,6 +108,11 @@ export function buildAppMenu(): void {
 }
 
 export function createWindow(): void {
+  // The UI is dark-only; keep the sidebar material dark in light mode too.
+  nativeTheme.themeSource = 'dark'
+  // macOS 26+: native Liquid Glass (NSGlassEffectView) behind the web
+  // contents; older macOS keeps the sidebar vibrancy material.
+  const useLiquidGlass = liquidGlass.isGlassSupported()
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -109,9 +121,13 @@ export function createWindow(): void {
     titleBarStyle: 'hiddenInset',
     // Vertically centred in the renderer's 68px title bar (TopBar, h-17).
     trafficLightPosition: { x: 20, y: 27 },
-    vibrancy: 'under-window',
-    visualEffectState: 'active',
-    backgroundColor: '#09090b', // zinc-950
+    // Transparent so the sidebar column shows the native material behind it;
+    // the renderer paints everything else opaque. Liquid Glass must not be
+    // combined with vibrancy, which would cover it with the blurry material.
+    ...(useLiquidGlass
+      ? { transparent: true }
+      : { vibrancy: 'sidebar' as const, visualEffectState: 'followWindow' as const }),
+    backgroundColor: '#00000000',
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
       nodeIntegration: false,
@@ -120,6 +136,7 @@ export function createWindow(): void {
     },
   })
   setMainWindow(win)
+  trackWindowActivity(win)
 
   if (process.env.PUROS_RENDERER_SMOKE === '1') {
     const resultPath = process.env.PUROS_RENDERER_SMOKE_RESULT
@@ -304,6 +321,11 @@ export function createWindow(): void {
     })
   }
 
+  if (useLiquidGlass) {
+    // Transparent windows hide the traffic lights by default.
+    win.setWindowButtonVisibility(true)
+  }
+
   if (VITE_DEV_SERVER_URL) {
     win.loadURL(VITE_DEV_SERVER_URL)
   } else {
@@ -312,6 +334,11 @@ export function createWindow(): void {
 
   win.webContents.once('did-finish-load', () => {
     flushPendingLastFmAuthToken()
+    if (useLiquidGlass) {
+      // A light black tint cancels the glass's own grey fill so the sidebar
+      // reads as black without losing its see-through look.
+      liquidGlass.addView(win.getNativeWindowHandle(), { tintColor: '#00000059' })
+    }
   })
 }
 

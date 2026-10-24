@@ -38,7 +38,7 @@ export default defineConfig(({ mode }) => {
             },
             build: {
               rollupOptions: {
-                external: ['music-metadata', 'better-sqlite3'],
+                external: ['music-metadata', 'better-sqlite3', 'electron-liquid-glass'],
               },
             },
           },
